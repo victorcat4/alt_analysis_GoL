@@ -1,0 +1,1477 @@
+---
+title: "Modelling fligth heights of migratory birds over the gulf of Lion using GPS data"
+author: "Victor Cat, Nicolas Courbin, Coline Canonne"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    code_folding: hide
+params:
+  root_dir:
+    label: "Path to project directory"
+    value: "C:/Users/victor.cat/R_project/Migration_alt_2/Migration_alt"
+    input: text
+---
+
+**Update Note:** This script has been updated to use Maud's confidence interval calculation method. Instead of simulating values with `rlnorm()` and calculating proportions from simulated data, the script now calculates proportions directly using `plnorm()` for each MCMC iteration, then takes quantiles across iterations. This method is more direct, computationally efficient, and produces exact confidence intervals without simulation error.
+
+```{r setup, include=FALSE}
+
+#Load packages
+library(nimble)
+library(coda)
+library(dplyr)
+library(ggplot2)
+library(MCMCvis)
+library(patchwork)
+library(transport)
+library(sf)
+library(readxl)
+library(gt)
+library(grid)
+library(png)
+library(cowplot)
+
+
+theme_set(theme_bw())
+```
+
+# Description
+
+This script contains the code for running the following model :
+
+---
+
+For \( i = 1, \ldots, N_\text{obs} \):  
+For \( j = 1, \ldots, N_\text{ec} \):
+
+\[
+\begin{aligned}
+\text{alt}^{\text{obs}}_{i,j} &\sim \mathrm{N}(\mu = \hat{\text{alt}}^{\text{true}}_{i,j},\ \sigma = \hat{\sigma}^{\text{obs}}) \\\\
+\text{alt}^{\text{true}}_{i,j} &\sim \text{Lognormal}(\mu = \hat{\mu}_{i,j},\ \sigma = \hat{\sigma}_{i,j}) \\\\
+\hat{\mu}_{i,j} &= \alpha^0_j + \alpha^1_j \cdot \text{dist_shore}_i \\\\
+\hat{\sigma}_{i,j} &= \beta^0_j
+\end{aligned}
+\]
+
+Random effect:
+
+\[
+\begin{aligned}
+\alpha^0_j &\sim \mathrm{N}(\mu = \mu^{\text{ec}}_j,\ \sigma = \sigma^{\text{ec}}_j) \\\\
+\alpha^1_j &\sim \mathrm{N}(\mu = \mu^{\text{ec}}_j,\ \sigma = \sigma^{\text{ec}}_j) \\\\
+\beta^0_j &\sim \mathrm{N}(\mu = \mu^{\text{ec}}_j,\ \sigma = \sigma^{\text{ec}}_j)
+\end{aligned}
+\]
+
+---
+
+This model analyzes bird flight altitudes by accounting for both ecological group and distance to shore. Observed altitudes are assumed to follow a normal distribution centered on the true (latent) altitude with a fixed observational error. The true altitude is modeled as a lognormal distribution, where its log-mean is a linear function of the distance to shore with ecological group–specific coefficients, and its log-standard deviation also depends on the ecological group. Specifically, the intercept and slope of the altitude–shore distance relationship, as well as the altitude variability, are treated as random effects varying by ecological group, each drawn from a normal distribution with group-level mean and standard deviation. This model is run twice on two sets of data, post-breeding and pre-breeding flights heights.
+
+# Set params
+
+Set parameters for MCMC and simulation
+```{r set param}
+n_iter <- 50000 
+burnin <- n_iter*0.2 
+thin <- 5
+chains <- 2
+
+# Set number of simulations per scenario
+n_sim <- 2000
+```
+
+# Post-breeding {.tabset}
+
+Run analysis for post-breeding data.
+
+## Load data
+
+```{r load pst}
+
+EC <- read_excel("data/supp/EC.xlsx")
+
+gps <- readRDS("data/gps_migration_4.rds") %>% 
+  filter(in_GOL == TRUE & state == "Migration") %>% 
+  filter(!is.na(height_above_msl)) %>% #Remove NA location
+  filter(season == "post-breeding") %>% #Keep only post-breeding location
+  left_join(EC, by=c("individual_taxon_canonical_name"="specie_scientific" )) %>% #Add Ecological group information 
+  filter(height_above_msl > quantile(height_above_msl, 0.02)) %>% #Remove 2% lowest loc
+  filter(height_above_msl < 5000) #Remove location above 5000
+```
+
+## Run model
+
+### Nimble model
+
+```{r model pst}
+code <- nimbleCode({
+  for (i in 1:N) {
+    obs_alt[i] ~ dnorm(mean=true_alt[i], sd=sigma_obs)
+    true_alt[i] ~ dlnorm(meanlog=mu[i], sdlog=sigma_lognorm[i])
+    mu[i] <- alpha_0_re_mu[species_indices[i]] + alpha_1_re_mu[species_indices[i]] * dist_shore[i]
+    sigma_lognorm[i] <- beta_0_re_sigma[species_indices[i]]
+  }
+  
+  # Random effects
+  for (j in 1:nspecies) {
+    alpha_0_re_mu[j] ~ dnorm(alpha_0_mu, sd=alpha_0_sigma)         
+  }
+  
+  for (j in 1:nspecies) {
+    beta_0_re_sigma[j] ~ dnorm(beta_0_sigma, sd=beta_0_sigma_sigma)          
+  }
+  
+  for (j in 1:nspecies) {
+    alpha_1_re_mu[j] ~ dnorm(alpha_1_mu, sd=alpha_1_sigma)
+  }
+
+  # PRIORS
+  sigma_obs ~ dunif(min=0, max=50)
+  
+  alpha_0_sigma ~ dlnorm(meanlog=0, sdlog=2)
+  alpha_1_sigma ~ dlnorm(meanlog=0, sdlog=2)
+  beta_0_sigma_sigma ~ dlnorm(meanlog=0, sdlog=2)
+  
+  alpha_0_mu ~ dnorm(mean=0, sd=2)
+  alpha_1_mu ~ dnorm(mean=0, sd=2)
+  beta_0_sigma ~ dlnorm(meanlog=0, sdlog=2)
+})
+
+set.seed(10)
+
+#Set initial value for MCMC chain 1 and 2
+l1 <- list(
+  sigma_obs = runif(n=1, min=0, max=30),
+  alpha_0_mu = rnorm(n=1, mean=0, sd=2),
+  alpha_1_mu = rnorm(n=1, mean=0, sd=2),
+  beta_0_sigma_sigma = rlnorm(n=1, meanlog=0, sdlog=2),
+  alpha_0_sigma = rlnorm(n=1, meanlog=0, sdlog=2),
+  alpha_1_sigma = rlnorm(n=1, meanlog=0, sdlog=2),
+  beta_0_sigma = rlnorm(n=1, meanlog=0, sdlog=2)
+)
+
+l2 <- list(
+  sigma_obs = runif(n=1, min=0, max=30),
+  alpha_0_mu = rnorm(n=1, mean=0, sd=2),
+  alpha_1_mu = rnorm(n=1, mean=0, sd=2),
+  beta_0_sigma_sigma = rlnorm(n=1, meanlog=0, sdlog=2),
+  alpha_0_sigma = rlnorm(n=1, meanlog=0, sdlog=2),
+  alpha_1_sigma = rlnorm(n=1, meanlog=0, sdlog=2),
+  beta_0_sigma = rlnorm(n=1, meanlog=0, sdlog=2)
+)
+
+inits <- list(l1, l2)
+print(inits)
+```
+
+### Prep data
+
+Prepare data for MCMC run
+
+```{r}
+# Observed altitude
+obs_alt <- gps %>% 
+  pull(height_above_msl)
+
+# Sample size
+N <- length(obs_alt)
+
+species <- gps %>% pull(ecological_group) %>% as.factor()
+nspecies <- length(unique(species))
+species_indices <- as.numeric(species)
+
+# Distance to shore
+dist_shore  <- gps %>% 
+  pull(distance_to_shore) %>% 
+  scale(center=TRUE, scale=TRUE) %>% 
+  as.vector()
+
+constants <- list(
+  N = N, 
+  dist_shore = dist_shore,
+  nspecies = nspecies, 
+  species_indices = species_indices
+)
+
+data <- list(obs_alt = obs_alt)
+```
+
+### MCMC run
+
+```{r MCMC pstB}
+model <- nimbleModel(code = code, data = data, constants = constants, inits = inits)
+
+conf <- configureMCMC(model, enableWAIC = TRUE,
+                      monitors = c('alpha_0_mu',
+                                   'alpha_1_mu',
+                                   'beta_0_sigma',
+                                   'alpha_0_sigma',
+                                   'alpha_1_sigma',
+                                   'beta_0_sigma_sigma',
+                                   'sigma_obs',
+                                   'alpha_0_re_mu',
+                                   'alpha_1_re_mu',
+                                   'beta_0_re_sigma'))
+
+# Create the default MCMC algorithm
+mMCMC <- buildMCMC(conf)
+
+# Compile the model and MCMC algorithm
+Cmodel <- compileNimble(model)
+CMCMC <- compileNimble(mMCMC, project = Cmodel)
+
+samples <- runMCMC(CMCMC, niter = n_iter, nburnin = burnin, nchains = chains, 
+                   samplesAsCodaMCMC = TRUE, thin = thin, WAIC = TRUE, setSeed = c(1,2))
+
+saveRDS(samples, file = "output/model_lognorm_pstB.rds")
+
+MCMCsummary(samples$samples)
+MCMCtrace(samples$samples, pdf = FALSE)
+MCMCplot(samples$samples)
+
+```
+
+## Compare output with data
+
+### Simulate data
+
+```{r sim pst}
+samples <- readRDS(file = "output/model_lognorm_pstB.rds")
+
+est_df <- data.frame(
+  param = rownames(MCMCsummary(samples$samples)), 
+  estimate=MCMCsummary(samples$samples)$mean, 
+  sd=MCMCsummary(samples$samples)$sd
+  )
+
+sim <- tibble()
+
+for (i in 1:length(obs_alt)) {
+  
+  idx <- species_indices[i]
+  
+  alpha_0_re_mu <- est_df$estimate[est_df$param == paste0("alpha_0_re_mu[", idx, "]")]
+  alpha_1_re_mu <- est_df$estimate[est_df$param == paste0("alpha_1_re_mu[", idx, "]")]
+  sigma <- est_df$estimate[est_df$param == paste0("beta_0_re_sigma[", idx, "]")]
+  
+  alt_theo <- rlnorm(n = 100, meanlog = alpha_0_re_mu + alpha_1_re_mu * dist_shore[i], sdlog = sigma)
+  
+  temp <- tibble(
+    alt_theo = alt_theo,
+    ecological_group = rep(gps$ecological_group[i], times = 100),
+    dist = rep(dist_shore[i], times = 100),
+    alt_obs = rnorm(100, mean = alt_theo, sd = sigma) # Vectorized
+  )
+  
+  sim <- bind_rows(sim, temp)
+}
+
+```
+
+### Plots per ecological group 
+
+```{r plot alt pst}
+colors <- c("Simulated theoric alt" = "blue", 
+            "Simulated observed alt" = "red", 
+            "Observed alt" = "black")
+
+#Flight alt
+plot <- ggplot() +
+    geom_histogram(data = sim, 
+                 aes(x = alt_theo, y = after_stat(density) , fill = "Simulated theoric alt"), 
+                 binwidth = 50, 
+                 color = "black",
+                 position = "identity",
+                 size = 0.2) +
+    geom_histogram(data = gps, 
+                 aes(x = height_above_msl, y = after_stat(density),  fill = "Observed alt"), 
+                 binwidth = 50, 
+                 color = "black",
+                 alpha=0.3,
+                 size = 0.2) +
+  labs(x = "Hauteur de vol (m)", 
+         y = "Nombre de points", 
+         title = "") +
+  scale_fill_manual(values = colors) +
+  theme_minimal() +
+  facet_wrap(~ecological_group, nrow = 2) +
+  coord_flip(xlim = c(-200, 2000)) + 
+  theme(
+    legend.position = "none", 
+    axis.text.x = element_blank(),
+    axis.title = element_text(size = 9), 
+    axis.text.y = element_text(size = 7),
+    panel.grid.major = element_line(size = 0.2),
+    panel.grid.minor = element_line(size = 0.1))
+  
+plot
+
+ggsave(plot = plot, filename ="output/plots/compare_out_lognorm_pstB.png")
+```
+
+## Plots for figures
+
+### Simulate data 
+```{r}
+# Load saved model samples
+samples <- readRDS(file = "output/model_lognorm_pstB.rds")
+
+est_df <- data.frame(
+  param = rownames(MCMCsummary(samples$samples)), 
+  estimate = MCMCsummary(samples$samples)$mean, 
+  sd = MCMCsummary(samples$samples)$sd
+) %>% 
+  mutate(
+    param = case_when(
+      param == "alpha_0_mu" ~ "alpha_0_re_mu[6]", 
+      param == "alpha_1_mu" ~ "alpha_1_re_mu[6]", 
+      param == "beta_0_sigma" ~ "beta_0_re_sigma[6]",
+      TRUE ~ param
+    )
+  )
+rownames(est_df) <- est_df$param
+
+# Rename specific parameters in samples for consistency
+samples$samples$chain1 <- samples$samples$chain1 %>% 
+  as.data.frame() %>%
+  rename(
+    `alpha_0_re_mu[6]` = alpha_0_mu,
+    `alpha_1_re_mu[6]` = alpha_1_mu,
+    `beta_0_re_sigma[6]` = beta_0_sigma
+  )
+
+# Prepare distance data
+scale_dist <- gps %>% 
+  pull(distance_to_shore) %>% 
+  scale(center=TRUE, scale=TRUE) %>% 
+  as.vector()
+
+real_dist <- gps %>% 
+  pull(distance_to_shore) %>%
+  as.vector()
+
+# Calculate distance scale transformation
+model <- lm(scale_dist ~ real_dist)
+intercept <- model$coefficients[1]
+slope <- model$coefficients[2]
+
+# Create distance sampling points
+dist_samples <- seq(from=min(scale_dist), to=max(scale_dist), length.out = 30)
+nb_it <- nrow(samples$samples$chain1)
+
+# Initialize dataframe for results
+data_all <- data.frame()
+
+# Process each ecological group
+for (gp in 1:6) {
+  print(gp)
+  file_prefix <- paste0("output/proportions/", gp)
+  
+  if (paste0(file_prefix, "_prop_over_300_lognorm_pstB.rds") %in% list.files("output/proportions/", full.names = TRUE)) {
+    prop_over_300 <- readRDS(paste0(file_prefix, "_prop_over_300_lognorm_pstB.rds"))
+    prop_under_300 <- readRDS(paste0(file_prefix, "_prop_under_300_lognorm_pstB.rds"))
+    prop_under_200 <- readRDS(paste0(file_prefix, "_prop_under_200_lognorm_pstB.rds"))
+    prop_under_20 <- readRDS(paste0(file_prefix, "_prop_under_20_lognorm_pstB.rds"))
+
+  } else {
+
+    # Initialize matrices for storing results using Maud's method
+    prop_over_300 <- matrix(NA, nrow = nb_it, ncol = length(dist_samples))
+    prop_under_300 <- matrix(NA, nrow = nb_it, ncol = length(dist_samples))
+    prop_under_200 <- matrix(NA, nrow = nb_it, ncol = length(dist_samples))
+    prop_under_20 <- matrix(NA, nrow = nb_it, ncol = length(dist_samples))
+    Q25 <- matrix(NA, nrow = nb_it, ncol = length(dist_samples))
+    Q50 <- matrix(NA, nrow = nb_it, ncol = length(dist_samples))
+    Q75 <- matrix(NA, nrow = nb_it, ncol = length(dist_samples))
+    mode <- matrix(NA, nrow = nb_it, ncol = length(dist_samples))
+    
+    # Extract parameter names for current group
+    alpha_0_param <- paste0("alpha_0_re_mu[", gp, "]")
+    alpha_1_param <- paste0("alpha_1_re_mu[", gp, "]")
+    beta_0_param <- paste0("beta_0_re_sigma[", gp, "]")
+    
+    # Calculate proportions directly using plnorm (Maud's method)
+    for (it in 1:nb_it) {
+
+      # Extract parameters for current iteration
+      mean_coef_0 <- as.numeric(samples$samples$chain1[it, alpha_0_param])
+      mean_coef_1 <- as.numeric(samples$samples$chain1[it, alpha_1_param])
+      sd_value <- as.numeric(samples$samples$chain1[it, beta_0_param])
+      
+      for (d in 1:length(dist_samples)) {
+        # Calculate meanlog for lognormal distribution
+        meanlog <- mean_coef_0 + mean_coef_1 * dist_samples[d]
+        sdlog <- sd_value
+        
+        # Calculate proportions directly using plnorm (no simulation needed)
+        prop_under_20[it, d] <- plnorm(20, meanlog = meanlog, sdlog = sdlog) * 100
+        prop_under_200[it, d] <- plnorm(200, meanlog = meanlog, sdlog = sdlog) * 100
+        prop_under_300[it, d] <- plnorm(300, meanlog = meanlog, sdlog = sdlog) * 100
+        prop_over_300[it, d] <- (1 - plnorm(300, meanlog = meanlog, sdlog = sdlog)) * 100
+        
+        # Calculate quantiles using qlnorm
+        Q25[it, d] <- qlnorm(0.25, meanlog = meanlog, sdlog = sdlog)
+        Q50[it, d] <- qlnorm(0.50, meanlog = meanlog, sdlog = sdlog)
+        Q75[it, d] <- qlnorm(0.75, meanlog = meanlog, sdlog = sdlog)
+        mode[it, d] <- exp(meanlog - sdlog^2)
+      }
+    }
+    
+    # Save results (no longer saving simulation data)
+  
+    saveRDS(prop_over_300, file=paste0(file_prefix, "_prop_over_300_lognorm_pstB.rds"))
+    saveRDS(prop_under_300, file=paste0(file_prefix, "_prop_under_300_lognorm_pstB.rds"))
+    saveRDS(prop_under_200, file=paste0(file_prefix, "_prop_under_200_lognorm_pstB.rds"))
+    saveRDS(prop_under_20, file=paste0(file_prefix, "_prop_under_20_lognorm_pstB.rds"))
+    saveRDS(Q25, file=paste0(file_prefix, "_Q25_lognorm_pstB.rds"))
+    saveRDS(Q50, file=paste0(file_prefix, "_Q50_lognorm_pstB.rds"))
+    saveRDS(Q75, file=paste0(file_prefix, "_Q75_lognorm_pstB.rds"))
+    saveRDS(mode, file=paste0(file_prefix, "_mode_lognorm_pstB.rds"))
+
+  }
+  
+  # Summarize results for this group
+  group_data <- data.frame(
+    ecological_group = gp,
+    real_dist = round((dist_samples - intercept) / slope),
+    prop_under_300_med = apply(prop_under_300, 2, median),
+    prop_under_300_q025 = apply(prop_under_300, 2, quantile, probs = 0.025),
+    prop_under_300_q975 = apply(prop_under_300, 2, quantile, probs = 0.975)
+  )
+  
+  # Append to the main results dataframe
+  data_all <- bind_rows(data_all, group_data)
+}
+
+# Add ecological group names
+ecological_group_names <- c(
+  "1" = "Ardéidé",
+  "2" = "Grand échassier", 
+  "3" = "Laridé",
+  "4" = "Limicole",
+  "5" = "Terrestre",
+  "6" = "Population"
+)
+
+data_all <- data_all %>%
+  mutate(ecological_group_name = ecological_group_names[as.character(ecological_group)])
+```
+
+### Plot by distance
+
+```{r}
+plot <- ggplot(data = data_all %>% filter(ecological_group != 6), aes(x = real_dist, fill = factor(ecological_group_name))) +
+  geom_line(aes(y = prop_under_300_med)) +
+  geom_ribbon(aes(y = prop_under_300_med, ymin = prop_under_300_q025, ymax = prop_under_300_q975), alpha = 0.2) +
+  labs(
+    y = "Proportion de points en dessous de 300m (%)", 
+    x = "Distance à la côte (m)", 
+    title = "Post-nuptiale", 
+    fill = "Groupe écologique"  # ici il faut utiliser "fill" au lieu de "color" puisque c'est fill dans aes()
+  ) +
+  coord_cartesian(ylim = c(0, 100))
+
+plot
+
+ggsave(plot = plot, filename ="output/plots/lognormal_pstB_prop_under_300.png")
+ggsave(plot = plot, filename ="output/plots/lognormal_pstB_prop_under_300.pdf", device = "pdf")
+```
+
+### Functions for plots
+
+```{r}
+# Function to load posterior samples for a group
+load_posterior_samples <- function(group_id, base_path = "output/proportions/", season) {
+  list(
+    over_300 = readRDS(file = paste0(base_path, group_id , "_prop_over_300_lognorm_",season,".rds")),
+    under_300 = readRDS(file = paste0(base_path, group_id , "_prop_under_300_lognorm_",season,".rds")), 
+    under_200 = readRDS(file = paste0(base_path, group_id , "_prop_under_200_lognorm_",season,".rds")),
+    under_20 = readRDS(file = paste0(base_path, group_id , "_prop_under_20_lognorm_",season,".rds"))
+  )
+}
+
+find_mediane_it <- function(distrib_medians){
+  medians <- apply(distrib_medians, 2, median)
+  
+  # Get row indices of median values for each column
+  median_indices <- sapply(1:ncol(distrib_medians), function(j) {
+    # Get absolute difference between column values and median
+    col <- distrib_medians[, j]
+    which.min(abs(col - median(col)))
+  })
+
+  return(median_indices)
+}
+
+# Function to calculate quantiles and format them
+calculate_quantiles <- function(posterior_samples, closest_idx) {
+
+  lapply(posterior_samples, function(x) {
+    c(
+      quantile(x[, closest_idx], probs = 0.025),
+      quantile(x[, closest_idx], probs = 0.50),
+      quantile(x[, closest_idx], probs = 0.975))
+  })
+}
+
+
+# Function to get group name
+get_group_name <- function(group_id) {
+  switch(as.character(group_id),
+         "1" = "Ardéidé",
+         "2" = "Grand échassier",
+         "3" = "Laridé",
+         "4" = "Limicole",
+         "5" = "Terrestre",
+         "Population")
+}
+
+# Function to load posterior quantiles
+load_distribution_quantile <- function(group_id, base_path = "output/proportions/", season){
+  list(
+    Q25 = readRDS(file = paste0(base_path, group_id , "_Q25_lognorm_",season,".rds")),
+    Q50 = readRDS(file = paste0(base_path, group_id , "_Q50_lognorm_",season,".rds")), 
+    Q75 = readRDS(file = paste0(base_path, group_id , "_Q75_lognorm_",season,".rds")), 
+    Mode = readRDS(file = paste0(base_path, group_id , "_mode_lognorm_",season,".rds"))
+  )
+}
+
+# Function plot tables
+make_table <- function(quantiles, group_name, dist_method){
+  df_q <- data_frame(
+    clade = group_name,
+    `Distance selectionnée` = dist_method,
+    `Quantiles & Mode`= names(quantiles),
+    `Mediane` = sapply(quantiles, function(x) x[["50%"]]) %>% unname() %>% round(digits = 1),
+    `IC (95%)` = paste0(
+      sapply(quantiles, function(x) x[["2.5%"]]) %>% unname() %>% round(digits = 1),
+      "-",
+      sapply(quantiles, function(x) x[["97.5%"]]) %>% unname() %>% round(digits = 1))
+  )
+}
+
+# Function to generate lognormal distribution
+generate_lognorm_dist <- function(group_id, mean_dist, mediane_it, n = 200000) {
+  
+  idx <- mediane_it
+  
+  a0 <- samples$samples$chain1[idx, paste0("alpha_0_re_mu[", group_id, "]")]
+
+  a1 <- samples$samples$chain1[idx, paste0("alpha_1_re_mu[", group_id, "]")]
+  
+  b0 <- samples$samples$chain1[idx, paste0("beta_0_re_sigma[", group_id, "]")]
+  
+  mean <- a0 + a1 * mean_dist
+  
+  sd <- b0
+  
+  rlnorm(n = n, meanlog = mean, sdlog = sd)
+}
+
+# Function to create and save the density plot
+create_flight_height_plot <- function(height_data, quantiles, group_name, dist_method, closest_idx, season) {
+  
+  # Define breaks and prepare data
+  breaks <- c(0, 20, 200, 300, Inf)
+  
+  # Create labels with quantile information
+  g1 <- paste0("au-dessus de 300m = ", 
+               round(quantiles$over_300[["50%"]], 1), "% (", 
+               round(quantiles$over_300[["2.5%"]], 1), "-", 
+               round(quantiles$over_300[["97.5%"]], 1), "%)")
+  g2 <- paste0("entre 20-300m = ", 
+               round((quantiles$under_300[["50%"]]) - (quantiles$under_20[["50%"]]), 1), "% (", 
+               round((quantiles$under_300[["2.5%"]]) - (quantiles$under_20[["2.5%"]]), 1), "-", 
+               round((quantiles$under_300[["97.5%"]]) - (quantiles$under_20[["97.5%"]]), 1), "%)")
+  g3 <- paste0("entre 20-200m = ", 
+               round((quantiles$under_200[["50%"]]) - (quantiles$under_20[["50%"]]), 1), "% (", 
+               round((quantiles$under_200[["2.5%"]]) - (quantiles$under_20[["2.5%"]]), 1), "-", 
+               round((quantiles$under_200[["97.5%"]]) - (quantiles$under_20[["97.5%"]]), 1), "%)")
+  g4 <- paste0("entre 0-20m = ", 
+               round(quantiles$under_20[["50%"]], 1), "% (", 
+               round(quantiles$under_20[["2.5%"]], 1), "-", 
+               round(quantiles$under_20[["97.5%"]], 1), "%)")
+
+
+  # Create density plot
+  p <- ggplot(data.frame(value = height_data), aes(x = value)) + 
+       geom_density() + 
+       xlim(0.1, 5000)
+  
+  # Extract density data
+  pg_data <- ggplot_build(p)$data[[1]] %>%
+    as.data.frame() %>%
+    mutate(fill_group = case_when(
+      x <= 20 ~ g4, 
+        x < 200 & x > 20 ~ g3,
+        x >= 200 & x < 300 ~ g2,
+        x >= 300 ~ g1 ),
+      fill_group = factor(fill_group, levels = c(g1,g2,g3,g4))
+    )
+  
+  # Define fill colors
+  fill_colors <- setNames(
+    c("#cc4778", "#fde725", "#ed7953", "#9c179e"),
+    c(g4,g3, g2, g1)
+  )
+  fill_pattern <- setNames(
+    c("none","stripe", "none", "none"),
+    c(g3, g2, g1,g4)
+  )
+  
+  if(season == "pstB"){
+    season_clean <- "post-nuptiale"
+    logo_img <- readPNG("data/supp/south_logo.png")     # Read the PNG file
+  } else if (season == "preB") {
+    season_clean <- "pre-nuptiale"
+    logo_img <- readPNG("data/supp/north_logo.png")
+  } else {
+    stop("incorrect season, either pstB or preB")
+  }
+  
+  logo_grob <- rasterGrob(logo_img, interpolate = TRUE)
+
+  
+  # Create final plot
+  plot_base <- ggplot(pg_data, aes(x = x, y = y, fill = fill_group)) +
+    geom_area(alpha = 0.6) +
+    geom_line(color = "black") +
+    geom_vline(xintercept = 20, linetype = "longdash", col = "grey") +
+    geom_vline(xintercept = 200, linetype = "longdash", col = "grey") +
+    geom_vline(xintercept = 300, linetype = "longdash") +
+    coord_flip(xlim = c(0, 1600)) +
+    scale_fill_manual(name = "Proportion des points (95% IC)", values = fill_colors) +
+    labs( title = "Distribution des hauteurs de vol dans le golfe du Lion",
+                     subtitle =paste("Migration ",season_clean,", ",group_name, sep=""),
+                   x = "Hauteur de vol (m)", 
+                   y = "Fréquence" ) +
+    theme_classic() +
+    theme(
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      legend.position = c(0.65, 0.4)
+    )
+  
+  plot <- ggdraw() +
+  draw_plot(plot_base) +
+  draw_grob(logo_grob, y=0.45, width = 0.07)
+  
+  # Save the plot
+  ggsave(
+    paste0("output/plots/lognormal_",season,"_", group_name,"_", dist_method, ".png"), 
+    plot, width = 1500, height = 1500, units = 'px', dpi = 300
+  )
+  
+  return(plot)
+}
+
+# Function to extract proportion data for table/CSV
+extract_proportion_data <- function(quantiles, group_name, dist_method, season) {
+  
+  # Calculate the proportion for 20-300m range (under_300 - under_20)
+  prop_20_300_med <- round((quantiles$under_300[["50%"]]) - (quantiles$under_20[["50%"]]), 1)
+  prop_20_300_lower <- round((quantiles$under_300[["2.5%"]]) - (quantiles$under_20[["2.5%"]]), 1)
+  prop_20_300_upper <- round((quantiles$under_300[["97.5%"]]) - (quantiles$under_20[["97.5%"]]), 1)
+  
+  # Calculate the proportion for 20-200m range (under_200 - under_20)
+  prop_20_200_med <- round((quantiles$under_200[["50%"]]) - (quantiles$under_20[["50%"]]), 1)
+  prop_20_200_lower <- round((quantiles$under_200[["2.5%"]]) - (quantiles$under_20[["2.5%"]]), 1)
+  prop_20_200_upper <- round((quantiles$under_200[["97.5%"]]) - (quantiles$under_20[["97.5%"]]), 1)
+  
+  data.frame(
+    ecological_group = group_name,
+    season = season,
+    distance_method = dist_method,
+    altitude_range = c("0-20m", "20-200m", "20-300m", ">300m"),
+    proportion_median = c(
+      round(quantiles$under_20[["50%"]], 1),
+      prop_20_200_med,
+      prop_20_300_med,
+      round(quantiles$over_300[["50%"]], 1)
+    ),
+    CI_lower = c(
+      round(quantiles$under_20[["2.5%"]], 1),
+      prop_20_200_lower,
+      prop_20_300_lower,
+      round(quantiles$over_300[["2.5%"]], 1)
+    ),
+    CI_upper = c(
+      round(quantiles$under_20[["97.5%"]], 1),
+      prop_20_200_upper,
+      prop_20_300_upper,
+      round(quantiles$over_300[["97.5%"]], 1)
+    )
+  ) %>%
+    mutate(
+      CI_95 = paste0(CI_lower, "-", CI_upper),
+      proportion_with_CI = paste0(proportion_median, "% (", CI_95, "%)")
+    )
+}
+
+```
+
+### Plot with dist = mean(distances)
+
+```{r}
+# Calculate mean distance for each group
+mean_dist_ls <- sapply(1:5, function(gp) {
+  mean(dist_shore[which(species_indices == gp)])
+})
+
+# Add population mean
+mean_dist_ls <- c(mean_dist_ls, mean(dist_shore))
+
+# Find index of closest value in the vector of distance to shore for mean distance value
+closest_idxs <- sapply(mean_dist_ls, function(x) {
+  which.min(abs(dist_samples - x))
+})
+
+df <- data_frame()
+proportion_data_pstB_mean <- data.frame()  # Initialize dataframe for proportion data
+
+# Process each group
+for (gp in 1:6) {
+  cat("Processing group", gp, "-", get_group_name(gp), "\n")
+  
+  # Load posterior samples
+  posterior_samples <- load_posterior_samples(gp, season = "pstB")
+  
+  # Load distribution quantile
+  dist_q <- load_distribution_quantile(gp, season = "pstB")
+  
+  # Find MCMC iteration with mediane value for distribution's mediane
+  mediane_it <- find_mediane_it(dist_q$Q50)
+  
+  # Calculate quantiles
+  quantiles <- calculate_quantiles(posterior_samples, closest_idx = closest_idxs[gp])
+  
+  # calculate quantiles
+  dist_q_q <- calculate_quantiles(dist_q, closest_idx = closest_idxs[gp])
+  
+  # Generate lognormal distribution
+  elevation_predict <- generate_lognorm_dist(group_id = gp, mean_dist = dist_samples[closest_idxs[gp]], mediane_it = mediane_it[closest_idxs[gp]])
+  
+  # make table
+  df_gp <- make_table(quantiles = dist_q_q, group_name = get_group_name(gp), dist_method = "mean()")
+  
+  df <- bind_rows(df, df_gp)
+  
+  # Extract proportion data for CSV and gt() table
+  prop_data_gp <- extract_proportion_data(
+    quantiles = quantiles, 
+    group_name = get_group_name(gp), 
+    dist_method = "mean(dist)", 
+    season = "post-breeding"
+  )
+  proportion_data_pstB_mean <- bind_rows(proportion_data_pstB_mean, prop_data_gp)
+  
+  # Create and save plot
+  plot <- create_flight_height_plot(
+    elevation_predict,
+    quantiles,
+    get_group_name(gp),
+    dist_method = "mean(dist)", 
+    closest_idx = closest_idxs[gp],
+    season="pstB"
+  )
+  
+  print(plot)
+}
+
+# Save proportion data to CSV
+write.csv(proportion_data_pstB_mean, 
+          file = "output/proportions/proportion_data_pstB_mean_dist.csv", 
+          row.names = FALSE)
+
+gt(df)
+```
+
+#### Proportion data table (post-breeding, mean distance)
+
+```{r}
+# Display proportion data with gt()
+proportion_data_pstB_mean %>%
+  select(ecological_group, altitude_range, proportion_median, CI_95) %>%
+  gt(groupname_col = "ecological_group") %>%
+  cols_label(
+    altitude_range = "Altitude Range",
+    proportion_median = "Proportion (%)",
+    CI_95 = "95% CI"
+  ) %>%
+  tab_header(
+    title = "Flight height proportions by altitude range",
+    subtitle = "Post-breeding migration, distance = mean(distances)"
+  )
+```
+
+### Plot with distance=0
+
+```{r}
+dist_0 <- min(dist_shore) %>% rep(times=6)
+
+# Find index of closest value in the vector of distance to shore for mean distance value
+closest_idxs <- sapply(dist_0, function(x) {
+  which.min(abs(dist_samples - x))
+})
+
+df <- data_frame()
+proportion_data_pstB_zero <- data.frame()  # Initialize dataframe for proportion data
+
+# Process each group
+for (gp in 1:6) {
+  cat("Processing group", gp, "-", get_group_name(gp), "\n")
+  
+  # Load posterior samples
+  posterior_samples <- load_posterior_samples(gp, season = "pstB")
+  
+  # Load distribution quantile
+  dist_q <- load_distribution_quantile(gp, season = "pstB")
+  
+  # Find MCMC iteration with mediane value for distribution's mediane
+  mediane_it <- find_mediane_it(dist_q$Q50)
+  
+  # Calculate quantiles
+  quantiles <- calculate_quantiles(posterior_samples, closest_idx = closest_idxs[gp])
+  
+  # calculate quantiles
+  dist_q_q <- calculate_quantiles(dist_q, closest_idx = closest_idxs[gp])
+  
+  # Generate lognormal distribution
+  elevation_predict <- generate_lognorm_dist(group_id = gp, mean_dist = dist_samples[closest_idxs[gp]], mediane_it = mediane_it[closest_idxs[gp]])
+  
+  # make table
+  df_gp <- make_table(quantiles = dist_q_q, group_name = get_group_name(gp), dist_method = "zero")
+  
+  df <- bind_rows(df, df_gp)
+  
+  # Extract proportion data for CSV and gt() table
+  prop_data_gp <- extract_proportion_data(
+    quantiles = quantiles, 
+    group_name = get_group_name(gp), 
+    dist_method = "zero", 
+    season = "post-breeding"
+  )
+  proportion_data_pstB_zero <- bind_rows(proportion_data_pstB_zero, prop_data_gp)
+  
+  # Create and save plot
+  plot <- create_flight_height_plot(
+    elevation_predict,
+    quantiles,
+    get_group_name(gp),
+    dist_method = "zero", 
+    closest_idx = closest_idxs[gp],
+    season="pstB"
+  )
+  
+  print(plot)
+}
+
+# Save proportion data to CSV
+write.csv(proportion_data_pstB_zero, 
+          file = "output/proportions/proportion_data_pstB_zero_dist.csv", 
+          row.names = FALSE)
+
+gt(df)
+```
+
+#### Proportion data table (post-breeding, distance = 0)
+
+```{r}
+# Display proportion data with gt()
+proportion_data_pstB_zero %>%
+  select(ecological_group, altitude_range, proportion_median, CI_95) %>%
+  gt(groupname_col = "ecological_group") %>%
+  cols_label(
+    altitude_range = "Altitude Range",
+    proportion_median = "Proportion (%)",
+    CI_95 = "95% CI"
+  ) %>%
+  tab_header(
+    title = "Flight height proportions by altitude range",
+    subtitle = "Post-breeding migration, distance = 0"
+  )
+```
+
+# Pre-breeding {.tabset}
+
+Run analysis for pre-breeding data.
+
+## Load data
+
+```{r load pre}
+EC <- read_excel("data/supp/EC.xlsx")
+
+gps <- readRDS("data/gps_migration_4.rds") %>% 
+  filter(in_GOL == TRUE & state == "Migration") %>% 
+  filter(!is.na(height_above_msl)) %>% 
+  filter(season == "pre-breeding") %>% 
+  left_join(EC, by=c("individual_taxon_canonical_name"="specie_scientific" )) %>% 
+  filter(height_above_msl > quantile(height_above_msl, 0.02)) %>%
+  filter(height_above_msl < 5000)
+```
+
+## Run model
+
+### Nimble model
+
+```{r model pre}
+code <- nimbleCode({
+  for (i in 1:N) {
+    obs_alt[i] ~ dnorm(mean=true_alt[i], sd=sigma_obs)
+    true_alt[i] ~ dlnorm(meanlog=mu[i], sdlog=sigma_lognorm[i])
+    mu[i] <- alpha_0_re_mu[species_indices[i]] + alpha_1_re_mu[species_indices[i]] * dist_shore[i]
+    sigma_lognorm[i] <- beta_0_re_sigma[species_indices[i]]
+  }
+  
+  # Random effects
+  for (j in 1:nspecies) {
+    alpha_0_re_mu[j] ~ dnorm(alpha_0_mu, sd=alpha_0_sigma)
+  }
+  
+  for (j in 1:nspecies) {
+    beta_0_re_sigma[j] ~ dnorm(beta_0_sigma, sd=beta_0_sigma_sigma)  
+  }
+  
+  for (j in 1:nspecies) {
+    alpha_1_re_mu[j] ~ dnorm(alpha_1_mu, sd=alpha_1_sigma)
+  }
+
+  # PRIORS
+  sigma_obs ~ dunif(min=0, max=50)
+  
+  alpha_0_sigma ~ dlnorm(meanlog=0, sdlog=2)
+  alpha_1_sigma ~ dlnorm(meanlog=0, sdlog=2)
+  beta_0_sigma_sigma ~ dlnorm(meanlog=0, sdlog=2)
+  
+  alpha_0_mu ~ dnorm(mean=0, sd=2)
+  alpha_1_mu ~ dnorm(mean=0, sd=2)
+  beta_0_sigma ~ dlnorm(meanlog=0, sdlog=2)
+})
+
+set.seed(10)
+
+#Set initial value for MCMC chain 1 and 2
+l1 <- list(
+  sigma_obs = runif(n=1, min=0, max=30),
+  alpha_0_mu = rnorm(n=1, mean=0, sd=2),
+  alpha_1_mu = rnorm(n=1, mean=0, sd=2),
+  beta_0_sigma_sigma = rlnorm(n=1, meanlog=0, sdlog=2),
+  alpha_0_sigma = rlnorm(n=1, meanlog=0, sdlog=2),
+  alpha_1_sigma = rlnorm(n=1, meanlog=0, sdlog=2),
+  beta_0_sigma = rlnorm(n=1, meanlog=0, sdlog=2)
+)
+
+l2 <- list(
+  sigma_obs = runif(n=1, min=0, max=30),
+  alpha_0_mu = rnorm(n=1, mean=0, sd=2),
+  alpha_1_mu = rnorm(n=1, mean=0, sd=2),
+  beta_0_sigma_sigma = rlnorm(n=1, meanlog=0, sdlog=2),
+  alpha_0_sigma = rlnorm(n=1, meanlog=0, sdlog=2),
+  alpha_1_sigma = rlnorm(n=1, meanlog=0, sdlog=2),
+  beta_0_sigma = rlnorm(n=1, meanlog=0, sdlog=2)
+)
+
+inits <- list(l1, l2)
+print(inits)
+```
+
+### Prep data
+
+Prepare data for MCMC run
+
+```{r}
+# Observed altitude
+obs_alt <- gps %>% 
+  pull(height_above_msl)
+
+# Sample size
+N <- length(obs_alt)
+
+species <- gps %>% pull(ecological_group) %>% as.factor()
+nspecies <- length(unique(species))
+species_indices <- as.numeric(species)
+
+# Distance to shore
+dist_shore  <- gps %>% 
+  pull(distance_to_shore) %>% 
+  scale(center=TRUE, scale=TRUE) %>% 
+  as.vector()
+
+constants <- list(
+  N = N, 
+  dist_shore = dist_shore,
+  nspecies = nspecies, 
+  species_indices = species_indices
+)
+
+data <- list(obs_alt = obs_alt)
+```
+
+### MCMC run
+
+```{r MCMC preB}
+model <- nimbleModel(code = code, data = data, constants = constants, inits = inits)
+
+conf <- configureMCMC(model, enableWAIC = TRUE,
+                      monitors = c('alpha_0_mu',
+                                   'alpha_1_mu',
+                                   'beta_0_sigma',
+                                   'alpha_0_sigma',
+                                   'alpha_1_sigma',
+                                   'beta_0_sigma_sigma',
+                                   'sigma_obs',
+                                   'alpha_0_re_mu',
+                                   'alpha_1_re_mu',
+                                   'beta_0_re_sigma'))
+
+# Create the default MCMC algorithm
+mMCMC <- buildMCMC(conf)
+
+# Compile the model and MCMC algorithm
+Cmodel <- compileNimble(model)
+CMCMC <- compileNimble(mMCMC, project = Cmodel)
+
+samples <- runMCMC(CMCMC, niter = n_iter, nburnin = burnin, nchains = chains, 
+                   samplesAsCodaMCMC = TRUE, thin = thin, WAIC = TRUE, setSeed = c(1,2))
+
+saveRDS(samples, file = "output/model_lognorm_preB.rds")
+
+MCMCsummary(samples$samples)
+MCMCtrace(samples$samples, pdf = FALSE)
+MCMCplot(samples$samples)
+
+```
+
+## Compare output with data
+
+### Simulate data
+
+```{r sim pre}
+samples <- readRDS(file = "output/model_lognorm_preB.rds")
+
+est_df <- data.frame(
+  param = rownames(MCMCsummary(samples$samples)), 
+  estimate=MCMCsummary(samples$samples)$mean, 
+  sd=MCMCsummary(samples$samples)$sd
+  )
+
+sim <- tibble()
+
+for (i in 1:length(obs_alt)) {
+  
+  idx <- species_indices[i]
+  
+  alpha_0_re_mu <- est_df$estimate[est_df$param == paste0("alpha_0_re_mu[", idx, "]")]
+  alpha_1_re_mu <- est_df$estimate[est_df$param == paste0("alpha_1_re_mu[", idx, "]")]
+  sigma <- est_df$estimate[est_df$param == paste0("beta_0_re_sigma[", idx, "]")]
+  
+  alt_theo <- rlnorm(n = 100, meanlog = alpha_0_re_mu + alpha_1_re_mu * dist_shore[i], sdlog = sigma)
+  
+  temp <- tibble(
+    alt_theo = alt_theo,
+    ecological_group = rep(gps$ecological_group[i], times = 100),
+    dist = rep(dist_shore[i], times = 100),
+    alt_obs = rnorm(100, mean = alt_theo, sd = sigma) # Vectorized
+  )
+  
+  sim <- bind_rows(sim, temp)
+}
+
+```
+
+### Plots per ecological group 
+
+```{r plot alt pre}
+colors <- c("Simulated theoric alt" = "blue", 
+            "Simulated observed alt" = "red", 
+            "Observed alt" = "black")
+
+#Flight alt
+plot <- ggplot() +
+    geom_histogram(data = sim, 
+                 aes(x = alt_theo, y = after_stat(density) , fill = "Simulated theoric alt"), 
+                 binwidth = 50, 
+                 color = "black",
+                 position = "identity",
+                 size = 0.2) +
+    geom_histogram(data = gps, 
+                 aes(x = height_above_msl, y = after_stat(density),  fill = "Observed alt"), 
+                 binwidth = 50, 
+                 color = "black",
+                 alpha=0.3,
+                 size = 0.2) +
+  labs(x = "Hauteur de vol (m)", 
+         y = "Nombre de points", 
+         title = "") +
+  scale_fill_manual(values = colors) +
+  theme_minimal() +
+  facet_wrap(~ecological_group, nrow = 2) +
+  coord_flip(xlim = c(-200, 2000)) + 
+  theme(
+    legend.position = "none", 
+    axis.text.x = element_blank(),
+    axis.title = element_text(size = 9), 
+    axis.text.y = element_text(size = 7),
+    panel.grid.major = element_line(size = 0.2),
+    panel.grid.minor = element_line(size = 0.1))
+  
+plot
+
+ggsave(plot = plot, filename ="output/plots/compare_out_lognorm_preB.png")
+```
+
+## Plots for figures
+
+### Simulate data 
+```{r}
+# Load saved model samples
+samples <- readRDS(file = "output/model_lognorm_preB.rds")
+
+est_df <- data.frame(
+  param = rownames(MCMCsummary(samples$samples)), 
+  estimate = MCMCsummary(samples$samples)$mean, 
+  sd = MCMCsummary(samples$samples)$sd
+) %>% 
+  mutate(
+    param = case_when(
+      param == "alpha_0_mu" ~ "alpha_0_re_mu[6]", 
+      param == "alpha_1_mu" ~ "alpha_1_re_mu[6]", 
+      param == "beta_0_sigma" ~ "beta_0_re_sigma[6]",
+      TRUE ~ param
+    )
+  )
+rownames(est_df) <- est_df$param
+
+# Rename specific parameters in samples for consistency
+samples$samples$chain1 <- samples$samples$chain1 %>% 
+  as.data.frame() %>%
+  rename(
+    `alpha_0_re_mu[6]` = alpha_0_mu,
+    `alpha_1_re_mu[6]` = alpha_1_mu,
+    `beta_0_re_sigma[6]` = beta_0_sigma
+  )
+
+# Prepare distance data
+scale_dist <- gps %>% 
+  pull(distance_to_shore) %>% 
+  scale(center=TRUE, scale=TRUE) %>% 
+  as.vector()
+
+real_dist <- gps %>% 
+  pull(distance_to_shore) %>%
+  as.vector()
+
+# Calculate distance scale transformation
+model <- lm(scale_dist ~ real_dist)
+intercept <- model$coefficients[1]
+slope <- model$coefficients[2]
+
+# Create distance sampling points
+dist_samples <- seq(from=min(scale_dist), to=max(scale_dist), length.out = 30)
+nb_it <- nrow(samples$samples$chain1)
+
+# Initialize dataframe for results
+data_all <- data.frame()
+
+# Process each ecological group
+for (gp in 1:6) {
+  print(gp)
+  file_prefix <- paste0("output/proportions/", gp)
+  
+  if (paste0(file_prefix, "_prop_over_300_lognorm_preB.rds") %in% list.files("output/proportions/", full.names = TRUE)) {
+    prop_over_300 <- readRDS(paste0(file_prefix, "_prop_over_300_lognorm_preB.rds"))
+    prop_under_300 <- readRDS(paste0(file_prefix, "_prop_under_300_lognorm_preB.rds"))
+    prop_under_200 <- readRDS(paste0(file_prefix, "_prop_under_200_lognorm_preB.rds"))
+    prop_under_20 <- readRDS(paste0(file_prefix, "_prop_under_20_lognorm_preB.rds"))
+
+  } else {
+
+    # Initialize matrices for storing results using Maud's method
+    prop_over_300 <- matrix(NA, nrow = nb_it, ncol = length(dist_samples))
+    prop_under_300 <- matrix(NA, nrow = nb_it, ncol = length(dist_samples))
+    prop_under_200 <- matrix(NA, nrow = nb_it, ncol = length(dist_samples))
+    prop_under_20 <- matrix(NA, nrow = nb_it, ncol = length(dist_samples))
+    Q25 <- matrix(NA, nrow = nb_it, ncol = length(dist_samples))
+    Q50 <- matrix(NA, nrow = nb_it, ncol = length(dist_samples))
+    Q75 <- matrix(NA, nrow = nb_it, ncol = length(dist_samples))
+    mode <- matrix(NA, nrow = nb_it, ncol = length(dist_samples))
+    
+    # Extract parameter names for current group
+    alpha_0_param <- paste0("alpha_0_re_mu[", gp, "]")
+    alpha_1_param <- paste0("alpha_1_re_mu[", gp, "]")
+    beta_0_param <- paste0("beta_0_re_sigma[", gp, "]")
+    
+    # Calculate proportions directly using plnorm (Maud's method)
+    for (it in 1:nb_it) {
+
+      # Extract parameters for current iteration
+      mean_coef_0 <- as.numeric(samples$samples$chain1[it, alpha_0_param])
+      mean_coef_1 <- as.numeric(samples$samples$chain1[it, alpha_1_param])
+      sd_value <- as.numeric(samples$samples$chain1[it, beta_0_param])
+      
+      for (d in 1:length(dist_samples)) {
+        # Calculate meanlog for lognormal distribution
+        meanlog <- mean_coef_0 + mean_coef_1 * dist_samples[d]
+        sdlog <- sd_value
+        
+        # Calculate proportions directly using plnorm (no simulation needed)
+        prop_under_20[it, d] <- plnorm(20, meanlog = meanlog, sdlog = sdlog) * 100
+        prop_under_200[it, d] <- plnorm(200, meanlog = meanlog, sdlog = sdlog) * 100
+        prop_under_300[it, d] <- plnorm(300, meanlog = meanlog, sdlog = sdlog) * 100
+        prop_over_300[it, d] <- (1 - plnorm(300, meanlog = meanlog, sdlog = sdlog)) * 100
+        
+        # Calculate quantiles using qlnorm
+        Q25[it, d] <- qlnorm(0.25, meanlog = meanlog, sdlog = sdlog)
+        Q50[it, d] <- qlnorm(0.50, meanlog = meanlog, sdlog = sdlog)
+        Q75[it, d] <- qlnorm(0.75, meanlog = meanlog, sdlog = sdlog)
+        mode[it, d] <- exp(meanlog - sdlog^2)
+      }
+    }
+    
+    # Save results (no longer saving simulation data)
+  
+    saveRDS(prop_over_300, file=paste0(file_prefix, "_prop_over_300_lognorm_preB.rds"))
+    saveRDS(prop_under_300, file=paste0(file_prefix, "_prop_under_300_lognorm_preB.rds"))
+    saveRDS(prop_under_200, file=paste0(file_prefix, "_prop_under_200_lognorm_preB.rds"))
+    saveRDS(prop_under_20, file=paste0(file_prefix, "_prop_under_20_lognorm_preB.rds"))
+    saveRDS(Q25, file=paste0(file_prefix, "_Q25_lognorm_preB.rds"))
+    saveRDS(Q50, file=paste0(file_prefix, "_Q50_lognorm_preB.rds"))
+    saveRDS(Q75, file=paste0(file_prefix, "_Q75_lognorm_preB.rds"))
+    saveRDS(mode, file=paste0(file_prefix, "_mode_lognorm_preB.rds"))
+
+  }
+  
+  # Summarize results for this group
+  group_data <- data.frame(
+    ecological_group = gp,
+    real_dist = round((dist_samples - intercept) / slope),
+    prop_under_300_med = apply(prop_under_300, 2, median),
+    prop_under_300_q025 = apply(prop_under_300, 2, quantile, probs = 0.025),
+    prop_under_300_q975 = apply(prop_under_300, 2, quantile, probs = 0.975)
+  )
+  
+  # Append to the main results dataframe
+  data_all <- bind_rows(data_all, group_data)
+}
+
+# Add ecological group names
+ecological_group_names <- c(
+  "1" = "Ardéidé",
+  "2" = "Grand échassier", 
+  "3" = "Laridé",
+  "4" = "Limicole",
+  "5" = "Terrestre",
+  "6" = "Population"
+)
+
+data_all <- data_all %>%
+  mutate(ecological_group_name = ecological_group_names[as.character(ecological_group)])
+```
+
+### Plot by distance
+
+```{r}
+plot <- ggplot(data = data_all %>% filter(ecological_group != 6), aes(x = real_dist, fill = factor(ecological_group_name))) +
+  geom_line(aes(y = prop_under_300_med)) +
+  geom_ribbon(aes(y = prop_under_300_med, ymin = prop_under_300_q025, ymax = prop_under_300_q975), alpha = 0.2) +
+  labs(
+    y = "Proportion de points en dessous de 300m (%)", 
+    x = "Distance à la côte (m)", 
+    title = "Pre-nuptiale", 
+    fill = "Groupe écologique"  # ici il faut utiliser "fill" au lieu de "color" puisque c'est fill dans aes()
+  ) +
+  coord_cartesian(ylim = c(0, 100))
+
+plot
+
+ggsave(plot = plot, filename ="output/plots/lognormal_preB_prop_under_300.png")
+ggsave(plot = plot, filename ="output/plots/lognormal_preB_prop_under_300.pdf", device = "pdf")
+```
+
+### Plot with dist = mean(distances)
+
+```{r}
+# Calculate mean distance for each group
+mean_dist_ls <- sapply(1:5, function(gp) {
+  mean(dist_shore[which(species_indices == gp)])
+})
+
+# Add population mean
+mean_dist_ls <- c(mean_dist_ls, mean(dist_shore))
+
+# Find index of closest value in the vector of distance to shore for mean distance value
+closest_idxs <- sapply(mean_dist_ls, function(x) {
+  which.min(abs(dist_samples - x))
+})
+
+df <- data_frame()
+proportion_data_preB_mean <- data.frame()  # Initialize dataframe for proportion data
+
+getwd()
+
+# Process each group
+for (gp in 1:6) {
+  cat("Processing group", gp, "-", get_group_name(gp), "\n")
+  
+  # Load posterior samples
+  posterior_samples <- load_posterior_samples(gp, season = "preB")
+  
+  # Load distribution quantile
+  dist_q <- load_distribution_quantile(gp, season = "preB")
+  
+  # Find MCMC iteration with mediane value for distribution's mediane
+  mediane_it <- find_mediane_it(dist_q$Q50)
+  
+  # Calculate quantiles
+  quantiles <- calculate_quantiles(posterior_samples, closest_idx = closest_idxs[gp])
+  
+  # calculate quantiles
+  dist_q_q <- calculate_quantiles(dist_q, closest_idx = closest_idxs[gp])
+  
+  # Generate lognormal distribution
+  elevation_predict <- generate_lognorm_dist(group_id = gp, mean_dist = dist_samples[closest_idxs[gp]], mediane_it = mediane_it[closest_idxs[gp]])
+  
+  # make table
+  df_gp <- make_table(quantiles = dist_q_q, group_name = get_group_name(gp), dist_method = "mean()")
+  
+  df <- bind_rows(df, df_gp)
+  
+  # Extract proportion data for CSV and gt() table
+  prop_data_gp <- extract_proportion_data(
+    quantiles = quantiles, 
+    group_name = get_group_name(gp), 
+    dist_method = "mean(dist)", 
+    season = "pre-breeding"
+  )
+  proportion_data_preB_mean <- bind_rows(proportion_data_preB_mean, prop_data_gp)
+  
+  # Create and save plot
+  plot <- create_flight_height_plot(
+    elevation_predict,
+    quantiles,
+    get_group_name(gp),
+    dist_method = "mean(dist)", 
+    closest_idx = closest_idxs[gp],
+    season="preB"
+  )
+  
+  print(plot)
+}
+
+# Save proportion data to CSV
+write.csv(proportion_data_preB_mean, 
+          file = "output/proportions/proportion_data_preB_mean_dist.csv", 
+          row.names = FALSE)
+
+gt(df)
+```
+
+#### Proportion data table (pre-breeding, mean distance)
+
+```{r}
+# Display proportion data with gt()
+proportion_data_preB_mean %>%
+  select(ecological_group, altitude_range, proportion_median, CI_95) %>%
+  gt(groupname_col = "ecological_group") %>%
+  cols_label(
+    altitude_range = "Altitude Range",
+    proportion_median = "Proportion (%)",
+    CI_95 = "95% CI"
+  ) %>%
+  tab_header(
+    title = "Flight height proportions by altitude range",
+    subtitle = "Pre-breeding migration, distance = mean(distances)"
+  )
+```
+
+### Plot with distance=0
+
+```{r}
+dist_0 <- min(dist_shore) %>% rep(times=6)
+
+# Find index of closest value in the vector of distance to shore for mean distance value
+closest_idxs <- sapply(dist_0, function(x) {
+  which.min(abs(dist_samples - x))
+})
+
+df <- data_frame()
+proportion_data_preB_zero <- data.frame()  # Initialize dataframe for proportion data
+
+# Process each group
+for (gp in 1:6) {
+  cat("Processing group", gp, "-", get_group_name(gp), "\n")
+  
+  # Load posterior samples
+  posterior_samples <- load_posterior_samples(gp, season = "preB")
+  
+  # Load distribution quantile
+  dist_q <- load_distribution_quantile(gp, season = "preB")
+  
+  # Find MCMC iteration with mediane value for distribution's mediane
+  mediane_it <- find_mediane_it(dist_q$Q50)
+  
+  # Calculate quantiles
+  quantiles <- calculate_quantiles(posterior_samples, closest_idx = closest_idxs[gp])
+  
+  # calculate quantiles
+  dist_q_q <- calculate_quantiles(dist_q, closest_idx = closest_idxs[gp])
+  
+  # Generate lognormal distribution
+  elevation_predict <- generate_lognorm_dist(group_id = gp, mean_dist = dist_samples[closest_idxs[gp]], mediane_it = mediane_it[closest_idxs[gp]])
+  
+  # make table
+  df_gp <- make_table(quantiles = dist_q_q, group_name = get_group_name(gp), dist_method = "zero")
+  
+  df <- bind_rows(df, df_gp)
+  
+  # Extract proportion data for CSV and gt() table
+  prop_data_gp <- extract_proportion_data(
+    quantiles = quantiles, 
+    group_name = get_group_name(gp), 
+    dist_method = "zero", 
+    season = "pre-breeding"
+  )
+  proportion_data_preB_zero <- bind_rows(proportion_data_preB_zero, prop_data_gp)
+  
+  # Create and save plot
+  plot <- create_flight_height_plot(
+    elevation_predict,
+    quantiles,
+    get_group_name(gp),
+    dist_method = "zero", 
+    closest_idx = closest_idxs[gp],
+    season="preB"
+  )
+  
+  print(plot)
+}
+
+# Save proportion data to CSV
+write.csv(proportion_data_preB_zero, 
+          file = "output/proportions/proportion_data_preB_zero_dist.csv", 
+          row.names = FALSE)
+
+gt(df)
+```
+
+#### Proportion data table (pre-breeding, distance = 0)
+
+```{r}
+# Display proportion data with gt()
+proportion_data_preB_zero %>%
+  select(ecological_group, altitude_range, proportion_median, CI_95) %>%
+  gt(groupname_col = "ecological_group") %>%
+  cols_label(
+    altitude_range = "Altitude Range",
+    proportion_median = "Proportion (%)",
+    CI_95 = "95% CI"
+  ) %>%
+  tab_header(
+    title = "Flight height proportions by altitude range",
+    subtitle = "Pre-breeding migration, distance = 0"
+  )
+
+gtsave(gt_table, filename = "output/tables/flight_height_proportions_preB_zero.html")
+```

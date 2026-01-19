@@ -12,15 +12,83 @@
 
 
 # -----------------------------------------------------------------------------
+# OUTPUT COLUMN SPECIFICATION
+# -----------------------------------------------------------------------------
+
+#' Canonical Output Columns (in order)
+#'
+#' This defines the EXACT column order for all CSV output.
+#' All dataframes MUST be reordered to match before writing.
+OUTPUT_COLS <- c(
+  # Core identifiers
+  "individual_id",
+  "study_id",
+  "individual_taxon_canonical_name",
+  # Coordinates (MUST be numeric before conversion to character)
+  "location_long",
+  "location_lat",
+  # Temporal
+  "timestamp",
+  # Altitude
+  "height_above_msl",
+  # GPS quality (may be NA)
+  "gps_hdop",
+  "gps_vdop",
+  "gps_satellite_count",
+  # Processing outputs
+  "equip_loc",
+  "trajectory",
+  "season",
+  "in_GOL",
+  "state",
+  "db_cluster",
+  "distance_to_shore"
+)
+
+
+# -----------------------------------------------------------------------------
 # CSV UTILITIES
 # -----------------------------------------------------------------------------
 
-#' Append Dataframe to CSV
+#' Standardize Columns for CSV Output
+#'
+#' Ensures all output dataframes have the same columns in the same order.
+#' Missing columns are added as NA. Extra columns are dropped.
+#'
+#' @param df Dataframe to standardize
+#' @param output_cols Vector of column names in desired order
+#' @return Dataframe with standardized columns
+standardize_output_columns <- function(df, output_cols = OUTPUT_COLS) {
+  if (nrow(df) == 0) {
+    # Return empty dataframe with correct structure
+    empty_df <- as.data.frame(matrix(ncol = length(output_cols), nrow = 0))
+    names(empty_df) <- output_cols
+    return(tibble::as_tibble(empty_df))
+  }
+  
+  # Add missing columns as NA
+  for (col in output_cols) {
+    if (!col %in% names(df)) {
+      df[[col]] <- NA_character_
+    }
+  }
+  
+  # Select and reorder to canonical order
+  df %>% select(all_of(output_cols))
+}
+
+
+#' Append Dataframe to CSV (with column order enforcement)
+#'
+#' CRITICAL FIX: Ensures consistent column order before writing.
 #'
 #' @param df Dataframe to append
 #' @param csv_path Path to CSV file
 append_to_csv <- function(df, csv_path) {
   if (nrow(df) == 0) return(invisible(NULL))
+  
+  # CRITICAL: Standardize column order before writing
+  df <- standardize_output_columns(df)
   
   write_header <- !file.exists(csv_path)
   write_csv(df, csv_path, append = !write_header, col_names = write_header, na = "")

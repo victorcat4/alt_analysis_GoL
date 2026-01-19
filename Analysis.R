@@ -5,10 +5,11 @@
 # Main analysis script for GPS tracking data processing and visualization.
 #
 # Pipeline:
-#   1. Load and process all data sources (Movebank + non-Movebank)
-#   2. Generate summary statistics
-#   3. Create visualizations
-#   4. (Optional) Run Bayesian modeling
+#   1. Process all data sources (Movebank + non-Movebank)
+#   2. Summary statistics
+#   3. Load processed data & add ecological groups
+#   4. Visualization
+#   5. (Optional) Bayesian modeling
 #
 # =============================================================================
 
@@ -19,7 +20,7 @@
 
 # Paths
 movebank_dir     <- "D:/migralion_mb_data/individuals"
-non_movebank_dir <- "data/none_MB"
+non_movebank_dir <- "D:/migralion_none_mb_data"
 output_dir       <- "output"
 plots_dir        <- "output/plots"
 
@@ -191,23 +192,117 @@ print(summary_stats$species_counts, n = 25)
 
 
 # -----------------------------------------------------------------------------
-# PHASE 3: VISUALIZATION
+# PHASE 3: LOAD DATA & ADD ECOLOGICAL GROUPS
 # -----------------------------------------------------------------------------
 
 message("\n", strrep("=", 70))
-message("PHASE 3: Visualization")
+message("PHASE 3: Load Processed Data")
 message(strrep("=", 70), "\n")
 
-# Load processed data
-gps <- load_processed_data(output_csv)
+# Load processed GPS data
+message("  Loading processed GPS data...")
+gps <- read_csv(
+  output_csv,
+  col_types = cols(.default = col_character()),
+  progress = FALSE,
+  na = c("", "NA", "NULL", "na", "null")
+)
 
-# Add ecological groups if available
+message(sprintf("  Raw records loaded: %s", format(nrow(gps), big.mark = ",")))
+
+# Convert columns to appropriate types
+gps <- gps %>%
+  mutate(
+    location_long = as.numeric(location_long),
+    location_lat = as.numeric(location_lat),
+    height_above_msl = as.numeric(height_above_msl),
+    distance_to_shore = as.numeric(distance_to_shore),
+    in_GOL = as.logical(in_GOL),
+    db_cluster = as.integer(db_cluster),
+    gps_hdop = as.numeric(gps_hdop),
+    gps_vdop = as.numeric(gps_vdop),
+    gps_satellite_count = as.numeric(gps_satellite_count)
+  )
+
+# Validate coordinates (should be clean after pipeline fix)
+n_na_coords <- sum(is.na(gps$location_long) | is.na(gps$location_lat))
+if (n_na_coords > 0) {
+  warning(sprintf("Found %d rows with NA coordinates - filtering out (investigate pipeline bug!)", n_na_coords))
+  gps <- gps %>% filter(!is.na(location_long), !is.na(location_lat))
+}
+
+# Add ecological groups
+message("  Adding ecological groups...")
+
 ec_file <- "data/supp/EC.xlsx"
 if (file.exists(ec_file)) {
-  ec_mapping <- load_ecological_groups(ec_file)
-  gps <- add_ecological_groups(gps, ec_mapping)
-  message(sprintf("  Added ecological groups for %d species\n", n_distinct(ec_mapping$species)))
+  
+  # Load ecological group mapping
+  ec_mapping <- read_excel(ec_file) %>%
+    select(species = specie_scientific, ecological_group = ecological_group)
+  
+  # Translation for French group names (adjust if your file uses different encoding)
+  group_translation <- c(
+    "Ardéidé" = "Ardeid",
+    "Grand échassier" = "Large wader",
+    "Laridé" = "Larid",
+    "Limicole" = "Shorebird",
+    "Terrestre" = "Terrestrial"
+  )
+  
+  # Join and translate
+  gps <- gps %>%
+    left_join(ec_mapping, by = c("individual_taxon_canonical_name" = "species")) %>%
+    mutate(
+      ecological_group = if_else(
+        ecological_group %in% names(group_translation),
+        group_translation[ecological_group],
+        ecological_group
+      )
+    )
+  
+  n_with_group <- sum(!is.na(gps$ecological_group))
+  n_species_matched <- n_distinct(gps$individual_taxon_canonical_name[!is.na(gps$ecological_group)])
+  message(sprintf("  Matched %d species (%s records with ecological group)",
+                  n_species_matched, format(n_with_group, big.mark = ",")))
+  
+} else {
+  warning("Ecological groups file not found: ", ec_file)
+  gps$ecological_group <- NA_character_
 }
+
+# Summary statistics
+message("\n  Data Summary:")
+message(sprintf("    Total records: %s", format(nrow(gps), big.mark = ",")))
+message(sprintf("    Unique individuals: %d", n_distinct(gps$individual_id)))
+message(sprintf("    Unique species: %d", n_distinct(gps$individual_taxon_canonical_name)))
+message(sprintf("    Date range: %s to %s", min(gps$timestamp), max(gps$timestamp)))
+
+# Records by season and state
+message("\n  Records by Season & State:")
+gps %>%
+  count(season, state) %>%
+  pivot_wider(names_from = state, values_from = n, values_fill = 0) %>%
+  print()
+
+# Records by ecological group
+if (any(!is.na(gps$ecological_group))) {
+  message("\n  Records by Ecological Group:")
+  gps %>%
+    filter(!is.na(ecological_group)) %>%
+    count(ecological_group, name = "n_records") %>%
+    arrange(desc(n_records)) %>%
+    print()
+}
+
+
+# -----------------------------------------------------------------------------
+# PHASE 4: VISUALIZATION
+# -----------------------------------------------------------------------------
+
+message("\n", strrep("=", 70))
+message("PHASE 4: Visualization")
+message(strrep("=", 70), "\n")
 
 # Generate plots
 message("  Generating visualizations...")
@@ -216,12 +311,12 @@ message(sprintf("  Plots saved to: %s", plots_dir))
 
 
 # -----------------------------------------------------------------------------
-# PHASE 4: BAYESIAN MODELING (Optional)
+# PHASE 5: BAYESIAN MODELING (Optional)
 # -----------------------------------------------------------------------------
 
 if (RUN_MODELING) {
   message("\n", strrep("=", 70))
-  message("PHASE 4: Bayesian Modeling")
+  message("PHASE 5: Bayesian Modeling")
   message(strrep("=", 70), "\n")
   
   source("R/06_bayesian_modeling.R")

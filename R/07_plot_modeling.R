@@ -1,0 +1,445 @@
+# =============================================================================
+# Plot Bayesian Model Results
+# =============================================================================
+#
+# Visualization functions for flight height model outputs.
+#
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# FLIGHT HEIGHT DISTRIBUTION PLOTTING
+# -----------------------------------------------------------------------------
+
+#' Plot Flight Height Distribution for Single Group
+#'
+#' Creates a lognormal density plot showing flight height distribution with
+#' altitude bands color-coded and proportion estimates in legend.
+#'
+#' @param meanlog Lognormal meanlog parameter (median estimate)
+#' @param sdlog Lognormal sdlog parameter (median estimate)
+#' @param p_recap Dataframe with proportion summaries (median, CI_025, CI_975)
+#' @param group_name Name of ecological group
+#' @param season_label Season label for subtitle
+#' @param logo_grob Optional logo grob to add to plot
+#' @return ggplot object
+plot_flight_height_distribution_group <- function(meanlog,
+                                                   sdlog,
+                                                   p_recap,
+                                                   group_name,
+                                                   season_label = "Post-breeding migration",
+                                                   logo_grob = NULL) {
+
+  x_vals <- seq(0, 1700, length.out = 10000)
+  dens_vals <- dlnorm(x_vals, meanlog = meanlog, sdlog = sdlog)
+
+  pg_data <- data.frame(x = x_vals, y = dens_vals) %>%
+    mutate(
+      fill_group = case_when(
+        x > 300 ~ "300_inf",
+        x <= 20 ~ "0_20",
+        x > 20 & x <= 200 ~ "20_200",
+        x > 200 & x <= 300 ~ "200_300"
+      )
+    )
+
+  label_0_20 <- sprintf("between 0-20 m = %.1f%% (%.1f-%.1f%%)",
+                        p_recap$p_0_20[1] * 100,
+                        p_recap$p_0_20[2] * 100,
+                        p_recap$p_0_20[3] * 100)
+
+  label_20_200 <- sprintf("between 20-200 m = %.1f%% (%.1f-%.1f%%)",
+                          p_recap$p_20_200[1] * 100,
+                          p_recap$p_20_200[2] * 100,
+                          p_recap$p_20_200[3] * 100)
+
+  label_200_300 <- sprintf("between 200-300 m = %.1f%% (%.1f-%.1f%%)",
+                           p_recap$p_200_300[1] * 100,
+                           p_recap$p_200_300[2] * 100,
+                           p_recap$p_200_300[3] * 100)
+
+  label_300_inf <- sprintf("above 300 m = %.1f%% (%.1f-%.1f%%)",
+                           p_recap$p_300_inf[1] * 100,
+                           p_recap$p_300_inf[2] * 100,
+                           p_recap$p_300_inf[3] * 100)
+
+  fill_colors <- c(
+    "0_20" = "#cc4778",
+    "20_200" = "#fde725",
+    "200_300" = "#ed7953",
+    "300_inf" = "#9c179e"
+  )
+
+  fill_labels <- c(
+    "0_20" = label_0_20,
+    "20_200" = label_20_200,
+    "200_300" = label_200_300,
+    "300_inf" = label_300_inf
+  )
+
+  plot_base <- ggplot(pg_data, aes(x = x, y = y, fill = fill_group)) +
+    geom_area(alpha = 0.6) +
+    geom_line(color = "black") +
+    geom_vline(xintercept = 20, linetype = "longdash", col = "grey") +
+    geom_vline(xintercept = 200, linetype = "longdash", col = "grey") +
+    geom_vline(xintercept = 300, linetype = "longdash") +
+    coord_flip(xlim = c(0, 1600)) +
+    scale_fill_manual(
+      name = "Proportion of points (95% CI)",
+      values = fill_colors,
+      labels = fill_labels
+    ) +
+    labs(
+      title = "Distribution of flight heights in the Gulf of Lion",
+      subtitle = paste(season_label, group_name, sep = ", "),
+      x = "Flight height (m)",
+      y = "Frequency"
+    ) +
+    theme_classic() +
+    theme(
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      legend.position = c(0.65, 0.4)
+    )
+
+  if (!is.null(logo_grob)) {
+    if (requireNamespace("cowplot", quietly = TRUE)) {
+      plot_base <- cowplot::ggdraw() +
+        cowplot::draw_plot(plot_base) +
+        cowplot::draw_grob(logo_grob, y = 0.45, width = 0.07)
+    }
+  }
+
+  plot_base
+}
+
+
+#' Create All Flight Height Distribution Plots
+#'
+#' Generates flight height distribution plots for all ecological groups.
+#'
+#' @param samples MCMC samples object (filtered to converged chains)
+#' @param gps_data Filtered GPS data
+#' @param plots_dir Output directory for plots
+#' @param season_filter Season label
+#' @param logo_path Optional path to logo image
+create_flight_height_plots <- function(samples,
+                                        gps_data,
+                                        plots_dir,
+                                        season_filter = "post-breeding",
+                                        logo_path = NULL) {
+
+  message("  Generating flight height distribution plots...")
+
+  logo_grob <- NULL
+  if (!is.null(logo_path) && file.exists(logo_path)) {
+    if (requireNamespace("png", quietly = TRUE) && requireNamespace("grid", quietly = TRUE)) {
+      logo_img <- png::readPNG(logo_path)
+      logo_grob <- grid::rasterGrob(logo_img, interpolate = TRUE)
+    }
+  }
+
+  sum_v <- MCMCsummary(samples$samples)
+
+  eco_groups <- gps_data %>%
+    select(ecological_group) %>%
+    distinct() %>%
+    arrange(ecological_group) %>%
+    pull(ecological_group)
+
+  nspecies <- length(eco_groups)
+
+  ite <- do.call(rbind, lapply(samples$samples, as.data.frame))
+
+  season_label <- paste(tools::toTitleCase(gsub("-", " ", season_filter)), "migration")
+
+  for (g in seq_along(eco_groups)) {
+    group_name <- eco_groups[g]
+
+    message(sprintf("    - %s...", group_name))
+
+    # Calculate proportions for all iterations
+    # sigma_lognorm = exp(beta_0_re_sigma)
+    p_ite <- data.frame(
+      p_0_20 = numeric(nrow(ite)),
+      p_20_200 = numeric(nrow(ite)),
+      p_200_300 = numeric(nrow(ite)),
+      p_300_inf = numeric(nrow(ite))
+    )
+
+    for (i in 1:nrow(ite)) {
+      meanlog <- ite[i, paste0("alpha_0_mu[", g, "]")]
+      sdlog <- exp(ite[i, paste0("beta_0_re_sigma[", g, "]")])
+
+      p_ite$p_0_20[i] <- plnorm(20, meanlog, sdlog)
+      p_ite$p_20_200[i] <- plnorm(200, meanlog, sdlog) - plnorm(20, meanlog, sdlog)
+      p_ite$p_200_300[i] <- plnorm(300, meanlog, sdlog) - plnorm(200, meanlog, sdlog)
+      p_ite$p_300_inf[i] <- 1 - plnorm(300, meanlog, sdlog)
+    }
+
+    p_recap <- data.frame(
+      p_0_20 = c(
+        quantile(p_ite$p_0_20, 0.5),
+        quantile(p_ite$p_0_20, 0.025),
+        quantile(p_ite$p_0_20, 0.975)
+      ),
+      p_20_200 = c(
+        quantile(p_ite$p_20_200, 0.5),
+        quantile(p_ite$p_20_200, 0.025),
+        quantile(p_ite$p_20_200, 0.975)
+      ),
+      p_200_300 = c(
+        quantile(p_ite$p_200_300, 0.5),
+        quantile(p_ite$p_200_300, 0.025),
+        quantile(p_ite$p_200_300, 0.975)
+      ),
+      p_300_inf = c(
+        quantile(p_ite$p_300_inf, 0.5),
+        quantile(p_ite$p_300_inf, 0.025),
+        quantile(p_ite$p_300_inf, 0.975)
+      )
+    )
+    rownames(p_recap) <- c("median", "CI_025", "CI_975")
+
+    meanlog <- sum_v[paste0("alpha_0_mu[", g, "]"), "50%"]
+    sdlog <- exp(sum_v[paste0("beta_0_re_sigma[", g, "]"), "50%"])
+
+    plot <- plot_flight_height_distribution_group(
+      meanlog = meanlog,
+      sdlog = sdlog,
+      p_recap = p_recap,
+      group_name = group_name,
+      season_label = season_label,
+      logo_grob = logo_grob
+    )
+
+    filename <- sprintf("flight_height_%s_%s.png",
+                        tolower(gsub(" ", "_", group_name)),
+                        gsub("-", "_", season_filter))
+
+    ggsave(
+      filename = file.path(plots_dir, filename),
+      plot = plot,
+      width = 8,
+      height = 6,
+      dpi = 300
+    )
+  }
+
+  message("  Flight height plots saved.")
+  invisible(NULL)
+}
+
+
+#' Create Proportion Summary Table
+#'
+#' Creates and saves a formatted table of altitude proportions by group.
+#'
+#' @param proportion_data Dataframe with proportion summaries
+#' @param plots_dir Output directory for table
+#' @param season_filter Season label
+create_proportion_table <- function(proportion_data, plots_dir, season_filter) {
+  
+  if (!require("gt", quietly = TRUE)) {
+    warning("Package 'gt' not available. Skipping table creation.")
+    return(invisible(NULL))
+  }
+  
+  proportion_table <- proportion_data %>%
+    gt(groupname_col = "ecological_group") %>%
+    cols_label(
+      altitude_range = "Altitude Range",
+      proportion_median = "Proportion (%)",
+      CI_95 = "95% CI"
+    ) %>%
+    tab_header(
+      title = "Flight height proportions by altitude range",
+      subtitle = paste(tools::toTitleCase(gsub("-", " ", season_filter)), "migration")
+    )
+
+  gtsave(proportion_table, file.path(plots_dir, paste0("proportions_table_", season_filter, ".html")))
+  gtsave(proportion_table, file.path(plots_dir, paste0("proportions_table_", season_filter, ".png")))
+  
+  message(sprintf("  Proportion table saved: %s", file.path(plots_dir, paste0("proportions_table_", season_filter, ".png"))))
+  
+  invisible(proportion_table)
+}
+
+
+# -----------------------------------------------------------------------------
+# MCMC DIAGNOSTICS PLOTS
+# -----------------------------------------------------------------------------
+
+#' Create MCMC Trace Plots
+#'
+#' Generates trace plots for convergence assessment.
+#'
+#' @param samples MCMC samples object
+#' @param plots_dir Output directory
+#' @param season_filter Season label
+create_trace_plots <- function(samples, plots_dir, season_filter) {
+  
+  message("  Generating trace plots...")
+  
+  filename <- file.path(plots_dir, paste0("mcmc_trace_", season_filter, ".pdf"))
+  
+  pdf(filename, width = 12, height = 8)
+  MCMCtrace(samples$samples, pdf = FALSE)
+  dev.off()
+  
+  message(sprintf("  Trace plots saved: %s", filename))
+  invisible(NULL)
+}
+
+
+# -----------------------------------------------------------------------------
+# MAIN PLOTTING FUNCTION
+# -----------------------------------------------------------------------------
+
+#' Generate All Model Plots
+#'
+#' Creates all visualization outputs for a fitted model.
+#'
+#' @param model_results Results from run_flight_height_model() or run_single_season_model()
+#' @param plots_dir Output directory for plots
+#' @param season_filter Season label
+#' @param logo_path Optional path to logo image
+#' @param create_trace Whether to create trace plots (default: TRUE)
+generate_model_plots <- function(model_results,
+                                  plots_dir,
+                                  season_filter,
+                                  logo_path = NULL,
+                                  create_trace = TRUE) {
+  
+  if (!require("MCMCvis", quietly = TRUE)) {
+    stop("Package 'MCMCvis' is required. Install with: install.packages('MCMCvis')")
+  }
+  
+  dir.create(plots_dir, showWarnings = FALSE, recursive = TRUE)
+  
+  message(sprintf("\nGenerating plots for %s...", season_filter))
+  
+  # Flight height distribution plots
+  create_flight_height_plots(
+    samples = model_results$samples,
+    gps_data = model_results$gps_filtered,
+    plots_dir = plots_dir,
+    season_filter = season_filter,
+    logo_path = logo_path
+  )
+  
+  # Proportion table
+  create_proportion_table(
+    proportion_data = model_results$proportions,
+    plots_dir = plots_dir,
+    season_filter = season_filter
+  )
+  
+  # Trace plots
+  if (create_trace) {
+    create_trace_plots(
+      samples = model_results$samples,
+      plots_dir = plots_dir,
+      season_filter = season_filter
+    )
+  }
+  
+  message("  All plots generated.")
+  invisible(NULL)
+}
+
+
+# -----------------------------------------------------------------------------
+# STANDALONE PLOTTING FROM SAVED MODEL
+# -----------------------------------------------------------------------------
+
+#' Generate Plots from Saved Model Results
+#'
+#' Loads a previously saved model and generates all plots.
+#'
+#' @param model_path Path to saved model RDS file
+#' @param gps_data GPS dataframe (same filtering will be applied)
+#' @param plots_dir Output directory for plots
+#' @param season_filter Season filter to apply to GPS data
+#' @param logo_path Optional path to logo image
+#' @param create_trace Whether to create trace plots (default: TRUE)
+plot_from_saved_model <- function(model_path,
+                                   gps_data,
+                                   plots_dir,
+                                   season_filter = "post-breeding",
+                                   logo_path = NULL,
+                                   create_trace = TRUE) {
+
+  if (!require("MCMCvis", quietly = TRUE)) {
+    stop("Package 'MCMCvis' is required. Install with: install.packages('MCMCvis')")
+  }
+
+  message("Loading saved model...")
+  samples <- readRDS(model_path)
+
+  # Filter GPS data (same as in model)
+  gps <- gps_data %>%
+    mutate(
+      location_long = as.numeric(location_long),
+      location_lat = as.numeric(location_lat),
+      height_above_msl = as.numeric(height_above_msl),
+      distance_to_shore = as.numeric(distance_to_shore),
+      in_GOL = as.logical(in_GOL)
+    ) %>%
+    filter(in_GOL == TRUE, state == "Migration") %>%
+    filter(!is.na(height_above_msl), !is.na(ecological_group)) %>%
+    filter(season == season_filter) %>%
+    filter(height_above_msl > quantile(height_above_msl, 0.02, na.rm = TRUE)) %>%
+    filter(height_above_msl < 5000)
+
+  message(sprintf("Filtered data: %s observations", format(nrow(gps), big.mark = ",")))
+  message(sprintf("Model used %d converged chains", samples$n_chains_kept))
+
+  # Load proportion data if available
+  prop_dir <- dirname(dirname(model_path))
+  prop_file <- file.path(prop_dir, "proportions", paste0("proportion_data_", season_filter, ".rds"))
+  
+  if (file.exists(prop_file)) {
+    proportions <- readRDS(prop_file)
+  } else {
+    message("  Proportion data not found. Recalculating...")
+    proportions <- NULL
+  }
+
+  # Create mock results object
+  model_results <- list(
+    samples = samples,
+    gps_filtered = gps,
+    proportions = proportions
+  )
+
+  dir.create(plots_dir, showWarnings = FALSE, recursive = TRUE)
+
+  # Generate plots
+  create_flight_height_plots(
+    samples = samples,
+    gps_data = gps,
+    plots_dir = plots_dir,
+    season_filter = season_filter,
+    logo_path = logo_path
+  )
+  
+  if (!is.null(proportions)) {
+    create_proportion_table(
+      proportion_data = proportions,
+      plots_dir = plots_dir,
+      season_filter = season_filter
+    )
+  }
+  
+  if (create_trace) {
+    create_trace_plots(
+      samples = samples,
+      plots_dir = plots_dir,
+      season_filter = season_filter
+    )
+  }
+
+  message("\nPlotting complete!")
+  invisible(NULL)
+}

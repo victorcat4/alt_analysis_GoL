@@ -225,7 +225,38 @@ if (RUN_MODELING) {
   message(strrep("=", 70), "\n")
   
   source("R/06_bayesian_modeling.R")
-  results <- run_flight_height_model(gps_data = gps, output_dir = output_dir, plots_dir = plots_dir, n_iter = 1000000, burnin_prop = 0.9, thin = 20, chains = 10)
+  source("R/07_plot_modeling.R")
+  
+  # Pre-breeding migration
+  results_pre <- run_flight_height_model(
+    gps_data = gps, 
+    output_dir = output_dir, 
+    season = "pre-breeding",
+    n_iter = 1000000, 
+    burnin_prop = 0.9, 
+    thin = 20, 
+    chains = 10
+  )
+  
+  # Post-breeding migration
+  results_post <- run_flight_height_model(
+    gps_data = gps, 
+    output_dir = output_dir, 
+    season = "post-breeding",
+    n_iter = 1000000, 
+    burnin_prop = 0.9, 
+    thin = 20, 
+    chains = 10
+  )
+  
+  # Generate plots
+  if (!is.null(results_pre)) {
+    generate_model_plots(results_pre, plots_dir, season = "pre-breeding")
+  }
+  if (!is.null(results_post)) {
+    generate_model_plots(results_post, plots_dir, season = "post-breeding")
+  }
+  
 } else {
   message("\n[NOTE] Bayesian modeling skipped (set RUN_MODELING = TRUE to enable)")
 }

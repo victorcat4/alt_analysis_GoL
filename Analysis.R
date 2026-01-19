@@ -47,7 +47,7 @@ EXCLUDED_SPECIES <- c(
 )
 
 # Run Bayesian modeling? (computationally intensive)
-RUN_MODELING <- TRUE
+RUN_MODELING <- FALSE
 
 
 # -----------------------------------------------------------------------------

@@ -46,7 +46,7 @@ EXCLUDED_SPECIES <- c(
 )
 
 # Run Bayesian modeling? (computationally intensive)
-RUN_MODELING <- FALSE
+RUN_MODELING <- TRUE
 
 
 # -----------------------------------------------------------------------------
@@ -225,7 +225,7 @@ if (RUN_MODELING) {
   message(strrep("=", 70), "\n")
   
   source("R/06_bayesian_modeling.R")
-  results <- run_flight_height_model(gps_data = gps, output_dir = output_dir, plots_dir = plots_dir)
+  results <- run_flight_height_model(gps_data = gps, output_dir = output_dir, plots_dir = plots_dir, n_iter = 1000000, burnin_prop = 0.9, thin = 20, chains = 10)
 } else {
   message("\n[NOTE] Bayesian modeling skipped (set RUN_MODELING = TRUE to enable)")
 }

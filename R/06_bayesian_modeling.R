@@ -3,10 +3,126 @@
 # =============================================================================
 #
 # Hierarchical Bayesian analysis of bird flight altitudes during migration
-# using a lognormal distribution model. Supports both pre-breeding and
-# post-breeding migration seasons.
+# using a lognormal distribution model with GPS quality covariates.
+#
+# Key features:
+#   - Observation error modeled as function of GPS HDOP and satellite count
+#   - Fixed effects for intercept (alpha_0) and slope (alpha_1) by group
+#   - Random effect on log-scale standard deviation (beta_0_re_sigma)
+#   - Multiple chains with automatic convergence filtering
 #
 # =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# CONVERGENCE DIAGNOSTICS
+# -----------------------------------------------------------------------------
+
+#' Assess Chain Convergence Using Gelman-Rubin Diagnostic
+#'
+#' Calculates Gelman-Rubin (Rhat) statistics and identifies converged chains.
+#'
+#' @param samples MCMC samples as mcmc.list
+#' @param rhat_threshold Maximum Rhat for convergence (default: 1.1)
+#' @return List with converged chain indices and diagnostics
+assess_chain_convergence <- function(samples, rhat_threshold = 1.1) {
+  
+  n_chains <- length(samples)
+  
+  if (n_chains < 2) {
+    message("    Only 1 chain - skipping convergence assessment")
+    return(list(converged_idx = 1, all_converged = TRUE, rhat_summary = NULL))
+  }
+  
+  # Calculate Gelman-Rubin for all chain pairs
+  # Strategy: Find the largest subset of chains that converge together
+  
+  # First, check overall convergence with all chains
+  tryCatch({
+    gelman_all <- coda::gelman.diag(samples, multivariate = FALSE)
+    max_rhat_all <- max(gelman_all$psrf[, "Point est."], na.rm = TRUE)
+    
+    if (max_rhat_all < rhat_threshold) {
+      message(sprintf("    All %d chains converged (max Rhat = %.3f)", n_chains, max_rhat_all))
+      return(list(
+        converged_idx = seq_len(n_chains),
+        all_converged = TRUE,
+        max_rhat = max_rhat_all,
+        rhat_summary = gelman_all$psrf
+      ))
+    }
+  }, error = function(e) NULL)
+  
+  # If not all converged, find best subset
+  message("    Not all chains converged. Identifying converged subset...")
+  
+  # Calculate pairwise Rhat and find clusters of converged chains
+  best_subset <- 1
+  best_rhat <- Inf
+  
+  # Try progressively smaller subsets
+  for (subset_size in n_chains:2) {
+    combos <- combn(n_chains, subset_size, simplify = FALSE)
+    
+    for (combo in combos) {
+      tryCatch({
+        sub_samples <- samples[combo]
+        gelman_sub <- coda::gelman.diag(sub_samples, multivariate = FALSE)
+        max_rhat <- max(gelman_sub$psrf[, "Point est."], na.rm = TRUE)
+        
+        if (max_rhat < rhat_threshold && length(combo) > length(best_subset)) {
+          best_subset <- combo
+          best_rhat <- max_rhat
+        }
+      }, error = function(e) NULL)
+    }
+    
+    # If we found a valid subset of this size, stop searching
+    if (length(best_subset) == subset_size && best_rhat < rhat_threshold) {
+      break
+    }
+  }
+  
+  if (best_rhat >= rhat_threshold) {
+    warning("No subset of chains achieved convergence. Using all chains with caution.")
+    return(list(
+      converged_idx = seq_len(n_chains),
+      all_converged = FALSE,
+      max_rhat = best_rhat,
+      rhat_summary = NULL
+    ))
+  }
+  
+  message(sprintf("    Converged chains: %s (max Rhat = %.3f)", 
+                  paste(best_subset, collapse = ", "), best_rhat))
+  
+  list(
+    converged_idx = best_subset,
+    all_converged = FALSE,
+    max_rhat = best_rhat,
+    rhat_summary = NULL
+  )
+}
+
+
+#' Filter Samples to Converged Chains Only
+#'
+#' @param samples Full MCMC samples object (with $samples and $WAIC)
+#' @param converged_idx Indices of converged chains
+#' @return Filtered samples object
+filter_converged_chains <- function(samples, converged_idx) {
+  
+  filtered <- list(
+    samples = samples$samples[converged_idx],
+    WAIC = samples$WAIC,
+    converged_chains = converged_idx,
+    n_chains_original = length(samples$samples),
+    n_chains_kept = length(converged_idx)
+  )
+  
+  class(filtered$samples) <- "mcmc.list"
+  filtered
+}
 
 
 # -----------------------------------------------------------------------------
@@ -125,10 +241,9 @@ plot_flight_height_distribution_group <- function(meanlog,
 
 #' Create All Flight Height Distribution Plots
 #'
-#' Generates flight height distribution plots for all ecological groups
-#' and the population level.
+#' Generates flight height distribution plots for all ecological groups.
 #'
-#' @param samples MCMC samples object
+#' @param samples MCMC samples object (filtered to converged chains)
 #' @param gps_data Filtered GPS data
 #' @param plots_dir Output directory for plots
 #' @param season_filter Season label
@@ -150,7 +265,7 @@ create_flight_height_plots <- function(samples,
     }
   }
 
-  # Get MCMC summary
+  # Get MCMC summary from converged chains
   sum_v <- MCMCsummary(samples$samples)
 
   # Get ecological groups
@@ -162,31 +277,20 @@ create_flight_height_plots <- function(samples,
 
   nspecies <- length(eco_groups)
 
-  # Rename population-level parameters in summary
-  rownames(sum_v)[rownames(sum_v) == "alpha_0_mu"] <- paste0("alpha_0_re_mu[", nspecies + 1, "]")
-  rownames(sum_v)[rownames(sum_v) == "alpha_1_mu"] <- paste0("alpha_1_re_mu[", nspecies + 1, "]")
-  rownames(sum_v)[rownames(sum_v) == "beta_0_sigma"] <- paste0("beta_0_re_sigma[", nspecies + 1, "]")
-
   # Combine MCMC chains for iteration-level calculations
-  ite <- rbind(as.data.frame(samples$samples[[1]]), as.data.frame(samples$samples[[2]]))
-  names(ite)[names(ite) == "alpha_0_mu"] <- paste0("alpha_0_re_mu[", nspecies + 1, "]")
-  names(ite)[names(ite) == "alpha_1_mu"] <- paste0("alpha_1_re_mu[", nspecies + 1, "]")
-  names(ite)[names(ite) == "beta_0_sigma"] <- paste0("beta_0_re_sigma[", nspecies + 1, "]")
-
-  # Define group names including population
-  group_names <- c(eco_groups, "Population")
+  ite <- do.call(rbind, lapply(samples$samples, as.data.frame))
 
   # Format season label
   season_label <- paste(tools::toTitleCase(gsub("-", " ", season_filter)), "migration")
 
   # Generate plot for each group
-  for (g in seq_along(group_names)) {
-    group_name <- group_names[g]
-    group_idx <- if (g <= nspecies) g else nspecies + 1
+  for (g in seq_along(eco_groups)) {
+    group_name <- eco_groups[g]
 
     message(sprintf("    - %s...", group_name))
 
     # Calculate proportions for all iterations
+    # sigma_lognorm = exp(beta_0_re_sigma) in the new model
     p_ite <- data.frame(
       p_0_20 = numeric(nrow(ite)),
       p_20_200 = numeric(nrow(ite)),
@@ -195,8 +299,8 @@ create_flight_height_plots <- function(samples,
     )
 
     for (i in 1:nrow(ite)) {
-      meanlog <- ite[i, paste0("alpha_0_re_mu[", group_idx, "]")]
-      sdlog <- ite[i, paste0("beta_0_re_sigma[", group_idx, "]")]
+      meanlog <- ite[i, paste0("alpha_0_mu[", g, "]")]
+      sdlog <- exp(ite[i, paste0("beta_0_re_sigma[", g, "]")])
 
       p_ite$p_0_20[i] <- plnorm(20, meanlog, sdlog)
       p_ite$p_20_200[i] <- plnorm(200, meanlog, sdlog) - plnorm(20, meanlog, sdlog)
@@ -230,8 +334,8 @@ create_flight_height_plots <- function(samples,
     rownames(p_recap) <- c("median", "CI_025", "CI_975")
 
     # Get median parameter estimates for density curve
-    meanlog <- sum_v[paste0("alpha_0_re_mu[", group_idx, "]"), "50%"]
-    sdlog <- sum_v[paste0("beta_0_re_sigma[", group_idx, "]"), "50%"]
+    meanlog <- sum_v[paste0("alpha_0_mu[", g, "]"), "50%"]
+    sdlog <- exp(sum_v[paste0("beta_0_re_sigma[", g, "]"), "50%"])
 
     # Create plot
     plot <- plot_flight_height_distribution_group(
@@ -263,12 +367,65 @@ create_flight_height_plots <- function(samples,
 
 
 # -----------------------------------------------------------------------------
+# INITIAL VALUES GENERATION
+# -----------------------------------------------------------------------------
+
+#' Generate Initial Values Using Model Simulation
+#'
+#' Creates proper initial values by simulating derived quantities from the model.
+#'
+#' @param model Compiled nimble model
+#' @param nspecies Number of ecological groups
+#' @param chain_idx Chain index (for varying seeds)
+#' @return List of initial values
+generate_initial_values <- function(model, nspecies, chain_idx) {
+  
+  # Base initial values (stochastic nodes)
+  if (chain_idx == 1) {
+    # First chain: conservative starting values
+    inits <- list(
+      alpha_0_mu = rep(0, nspecies),
+      alpha_1_mu = rep(0, nspecies),
+      beta_0_sigma = 0,
+      beta_0_sigma_sigma = 0.1,
+      beta_0_obs = 0,
+      beta_1_obs = 0,
+      beta_2_obs = 0
+    )
+  } else {
+    # Other chains: dispersed starting values
+    inits <- list(
+      alpha_0_mu = rnorm(nspecies, mean = 0, sd = 0.5),
+      alpha_1_mu = rnorm(nspecies, mean = 0, sd = 0.5),
+      beta_0_sigma = rnorm(1, mean = 0, sd = 0.5),
+      beta_0_sigma_sigma = rgamma(1, 1, 1),
+      beta_0_obs = rnorm(1, mean = 0, sd = 0.5),
+      beta_1_obs = rnorm(1, mean = 0, sd = 0.5),
+      beta_2_obs = rnorm(1, mean = 0, sd = 0.5)
+    )
+  }
+  
+  # Set initial values and simulate derived quantities
+  model$setInits(inits)
+  model$simulate(c("beta_0_re_sigma", "sigma_obs", "sigma_lognorm", "mu", "true_alt"))
+  
+  # Add simulated values to initial values list
+  inits$beta_0_re_sigma <- model$beta_0_re_sigma
+  inits$sigma_obs <- model$sigma_obs
+  inits$true_alt <- model$true_alt
+  inits$mu <- model$mu
+  
+  inits
+}
+
+
+# -----------------------------------------------------------------------------
 # CORE MODELING FUNCTION (SINGLE SEASON)
 # -----------------------------------------------------------------------------
 
 #' Run Flight Height Model for Single Season
 #'
-#' Internal function that fits the Bayesian model for one season.
+#' Fits the Bayesian model with GPS quality covariates and convergence filtering.
 #'
 #' @param gps_data Processed GPS dataframe with ecological_group column
 #' @param output_dir Output directory for model results
@@ -278,6 +435,7 @@ create_flight_height_plots <- function(samples,
 #' @param burnin_prop Burnin proportion
 #' @param thin Thinning interval
 #' @param chains Number of chains
+#' @param rhat_threshold Gelman-Rubin threshold for convergence
 #' @param logo_path Optional path to logo image
 #' @param create_plots Whether to generate plots
 #' @return List with samples, proportions, and filtered GPS data
@@ -289,6 +447,7 @@ run_single_season_model <- function(gps_data,
                                      burnin_prop,
                                      thin,
                                      chains,
+                                     rhat_threshold = 1.1,
                                      logo_path,
                                      create_plots) {
 
@@ -305,7 +464,17 @@ run_single_season_model <- function(gps_data,
 
   message("  Preparing data for modeling...")
 
+  # Ensure proper types (defensive - in case data wasn't pre-processed)
   gps <- gps_data %>%
+    mutate(
+      location_long = as.numeric(location_long),
+      location_lat = as.numeric(location_lat),
+      height_above_msl = as.numeric(height_above_msl),
+      distance_to_shore = as.numeric(distance_to_shore),
+      in_GOL = as.logical(in_GOL),
+      gps_hdop = as.numeric(gps_hdop),
+      gps_satellite_count = as.numeric(gps_satellite_count)
+    ) %>%
     filter(in_GOL == TRUE, state == "Migration") %>%
     filter(!is.na(height_above_msl), !is.na(ecological_group)) %>%
     filter(season == season_filter) %>%
@@ -319,17 +488,38 @@ run_single_season_model <- function(gps_data,
     return(NULL)
   }
 
+  # Prepare GPS quality covariates (standardized, NAs replaced with 0)
+  gps$z_sat <- as.numeric(scale(gps$gps_satellite_count))
+  gps$z_sat[is.na(gps$z_sat)] <- 0
+  
+  gps$z_hdop <- as.numeric(scale(gps$gps_hdop))
+  gps$z_hdop[is.na(gps$z_hdop)] <- 0
+
   # Prepare model inputs
   obs_alt <- gps$height_above_msl
   N <- length(obs_alt)
 
-  species <- as.numeric(as.factor(gps$ecological_group))
+  species <- as.factor(gps$ecological_group)
   nspecies <- length(unique(species))
+  species_indices <- as.numeric(species)
 
-  dist_shore <- scale(gps$distance_to_shore)[, 1]
+  dist_shore <- scale(gps$distance_to_shore, center = TRUE, scale = TRUE)[, 1]
 
-  constants <- list(N = N, dist_shore = dist_shore, nspecies = nspecies, species_indices = species)
+  constants <- list(
+    N = N,
+    dist_shore = dist_shore,
+    nspecies = nspecies,
+    species_indices = species_indices,
+    gps_hdop = gps$z_hdop,
+    gps_nb_sat = gps$z_sat
+  )
+  
   data <- list(obs_alt = obs_alt)
+
+  message(sprintf("  Species groups: %d", nspecies))
+  message(sprintf("  GPS quality covariates: HDOP (%.1f%% valid), Satellites (%.1f%% valid)",
+                  100 * mean(gps$z_hdop != 0),
+                  100 * mean(gps$z_sat != 0)))
 
 
   # --- MODEL DEFINITION ---
@@ -337,59 +527,78 @@ run_single_season_model <- function(gps_data,
   message("  Building model...")
 
   code <- nimbleCode({
+    
     for (i in 1:N) {
-      obs_alt[i] ~ dnorm(mean = true_alt[i], sd = sigma_obs)
-      true_alt[i] ~ dlnorm(meanlog = mu[i], sdlog = sigma_lognorm[i])
-      mu[i] <- alpha_0_re_mu[species_indices[i]] + alpha_1_re_mu[species_indices[i]] * dist_shore[i]
-      sigma_lognorm[i] <- beta_0_re_sigma[species_indices[i]]
+      # Observation model with GPS-quality-dependent error
+      obs_alt[i] ~ dnorm(mean = true_alt[i], sd = sigma_obs[i])
+      
+      # Latent true altitude follows lognormal
+      true_alt[i] ~ dlnorm(meanlog = mu[i], sdlog = sigma_lognorm[species_indices[i]])
+      
+      # Mean log-altitude depends on distance to shore
+      mu[i] <- alpha_0_mu[species_indices[i]] + alpha_1_mu[species_indices[i]] * dist_shore[i]
+      
+      # Observation error as function of GPS quality
+      log(sigma_obs[i]) <- beta_0_obs + beta_1_obs * gps_hdop[i] + beta_2_obs * gps_nb_sat[i]
     }
-
+    
+    # Fixed effects by ecological group
     for (j in 1:nspecies) {
-      alpha_0_re_mu[j] ~ dnorm(alpha_0_mu, sd = alpha_0_sigma)
-      beta_0_re_sigma[j] ~ dnorm(beta_0_sigma, sd = beta_0_sigma_sigma)
-      alpha_1_re_mu[j] ~ dnorm(alpha_1_mu, sd = alpha_1_sigma)
+      alpha_0_mu[j] ~ dnorm(mean = 0, sd = 2)
+      alpha_1_mu[j] ~ dnorm(mean = 0, sd = 0.5)
     }
-
-    sigma_obs ~ dunif(min = 0, max = 50)
-    alpha_0_sigma ~ dlnorm(meanlog = 0, sdlog = 2)
-    alpha_1_sigma ~ dlnorm(meanlog = 0, sdlog = 2)
-    beta_0_sigma_sigma ~ dlnorm(meanlog = 0, sdlog = 2)
-    alpha_0_mu ~ dnorm(mean = 0, sd = 2)
-    alpha_1_mu ~ dnorm(mean = 0, sd = 2)
-    beta_0_sigma ~ dlnorm(meanlog = 0, sdlog = 2)
+    
+    # Random effect on log-scale standard deviation
+    beta_0_sigma ~ dnorm(mean = 0, sd = 0.5)
+    beta_0_sigma_sigma ~ dgamma(1, 1)
+    
+    for (j in 1:nspecies) {
+      beta_0_re_sigma[j] ~ dnorm(mean = beta_0_sigma, sd = beta_0_sigma_sigma)
+      log(sigma_lognorm[j]) <- beta_0_re_sigma[j]
+    }
+    
+    # Observation error coefficients
+    beta_0_obs ~ dnorm(mean = 0, sd = 1)
+    beta_1_obs ~ dnorm(mean = 0, sd = 0.5)
+    beta_2_obs ~ dnorm(mean = 0, sd = 0.5)
   })
 
 
   # --- INITIAL VALUES ---
 
-  set.seed(42)
+  message(sprintf("  Generating initial values for %d chains...", chains))
 
-  inits <- lapply(1:chains, function(x) {
-    list(
-      sigma_obs = runif(1, 0, 30),
-      alpha_0_mu = rnorm(1, 0, 2),
-      alpha_1_mu = rnorm(1, 0, 2),
-      beta_0_sigma_sigma = rlnorm(1, 0, 2),
-      alpha_0_sigma = rlnorm(1, 0, 2),
-      alpha_1_sigma = rlnorm(1, 0, 2),
-      beta_0_sigma = rlnorm(1, 0, 2)
-    )
+  # Build model once to use for simulating initial values
+  init_base <- list(
+    alpha_0_mu = rep(0, nspecies),
+    alpha_1_mu = rep(0, nspecies),
+    beta_0_sigma = 0,
+    beta_0_sigma_sigma = 0.1,
+    beta_0_obs = 0,
+    beta_1_obs = 0,
+    beta_2_obs = 0
+  )
+
+  model <- nimbleModel(code = code, data = data, constants = constants, inits = init_base)
+
+  # Generate initial values for each chain using simulation
+  inits <- lapply(1:chains, function(i) {
+    generate_initial_values(model, nspecies, i)
   })
 
 
   # --- RUN MCMC ---
 
-  message(sprintf("  Running MCMC: %d iterations, %d chains...", n_iter, chains))
-  message("  (This may take several minutes)")
-
-  model <- nimbleModel(code = code, data = data, constants = constants, inits = inits)
+  message(sprintf("  Running MCMC: %d iterations, %d chains, thin=%d...", n_iter, chains, thin))
+  message("  (This may take a long time)")
 
   conf <- configureMCMC(
     model,
     enableWAIC = TRUE,
-    monitors = c('alpha_0_mu', 'alpha_1_mu', 'beta_0_sigma',
-                 'alpha_0_sigma', 'alpha_1_sigma', 'beta_0_sigma_sigma',
-                 'sigma_obs', 'alpha_0_re_mu', 'alpha_1_re_mu', 'beta_0_re_sigma')
+    monitors = c('alpha_0_mu', 'alpha_1_mu',
+                 'beta_0_sigma', 'beta_0_sigma_sigma',
+                 'beta_0_obs', 'beta_1_obs', 'beta_2_obs',
+                 'beta_0_re_sigma')
   )
 
   mMCMC <- buildMCMC(conf)
@@ -401,15 +610,31 @@ run_single_season_model <- function(gps_data,
     niter = n_iter,
     nburnin = burnin,
     nchains = chains,
+    inits = inits,
     samplesAsCodaMCMC = TRUE,
     thin = thin,
-    WAIC = TRUE,
-    setSeed = 1:chains
+    WAIC = TRUE
   )
 
-  # Save model
-  model_file <- file.path(model_dir, paste0("model_lognorm_", season_filter, ".rds"))
-  saveRDS(samples, file = model_file)
+
+  # --- CONVERGENCE ASSESSMENT AND FILTERING ---
+
+  message("  Assessing chain convergence...")
+  
+  convergence <- assess_chain_convergence(samples$samples, rhat_threshold)
+  
+  # Filter to converged chains only
+  samples_filtered <- filter_converged_chains(samples, convergence$converged_idx)
+  
+  message(sprintf("  Kept %d/%d chains for inference", 
+                  samples_filtered$n_chains_kept, 
+                  samples_filtered$n_chains_original))
+
+
+  # --- SAVE MODEL ---
+
+  model_file <- file.path(model_dir, paste0("model_lognorm_gps_quality_", season_filter, ".rds"))
+  saveRDS(samples_filtered, file = model_file)
   message(sprintf("  Model saved: %s", model_file))
 
 
@@ -420,9 +645,13 @@ run_single_season_model <- function(gps_data,
   diag_file <- file.path(model_dir, paste0("convergence_diagnostics_", season_filter, ".txt"))
   sink(diag_file)
   cat(sprintf("=== MCMC Summary Statistics (%s) ===\n\n", season_filter))
-  print(MCMCsummary(samples$samples))
+  cat(sprintf("Chains used: %s (of %d total)\n", 
+              paste(convergence$converged_idx, collapse = ", "),
+              samples_filtered$n_chains_original))
+  cat(sprintf("Max Rhat: %.3f\n\n", convergence$max_rhat))
+  print(MCMCsummary(samples_filtered$samples))
   cat("\n\n=== WAIC ===\n")
-  print(samples$WAIC)
+  print(samples_filtered$WAIC)
   sink()
 
 
@@ -430,17 +659,10 @@ run_single_season_model <- function(gps_data,
 
   message("  Calculating altitude proportions...")
 
-  sum_v <- MCMCsummary(samples$samples)
+  sum_v <- MCMCsummary(samples_filtered$samples)
 
-  # Rename population-level parameters
-  rownames(sum_v)[rownames(sum_v) == "alpha_0_mu"] <- paste0("alpha_0_re_mu[", nspecies + 1, "]")
-  rownames(sum_v)[rownames(sum_v) == "alpha_1_mu"] <- paste0("alpha_1_re_mu[", nspecies + 1, "]")
-  rownames(sum_v)[rownames(sum_v) == "beta_0_sigma"] <- paste0("beta_0_re_sigma[", nspecies + 1, "]")
-
-  ite <- rbind(as.data.frame(samples$samples[[1]]), as.data.frame(samples$samples[[2]]))
-  names(ite)[names(ite) == "alpha_0_mu"] <- paste0("alpha_0_re_mu[", nspecies + 1, "]")
-  names(ite)[names(ite) == "alpha_1_mu"] <- paste0("alpha_1_re_mu[", nspecies + 1, "]")
-  names(ite)[names(ite) == "beta_0_sigma"] <- paste0("beta_0_re_sigma[", nspecies + 1, "]")
+  # Combine converged chains for iteration-level calculations
+  ite <- do.call(rbind, lapply(samples_filtered$samples, as.data.frame))
 
   # Get group names
   eco_groups <- gps %>%
@@ -449,14 +671,11 @@ run_single_season_model <- function(gps_data,
     arrange(ecological_group) %>%
     pull(ecological_group)
 
-  group_names <- c(eco_groups, "Population")
-
   # Calculate proportions for each group
   proportion_data <- data.frame()
 
-  for (g in seq_along(group_names)) {
-    group_name <- group_names[g]
-    group_idx <- if (g <= nspecies) g else nspecies + 1
+  for (g in seq_along(eco_groups)) {
+    group_name <- eco_groups[g]
 
     p_ite <- data.frame(
       p_0_20 = numeric(nrow(ite)),
@@ -466,8 +685,8 @@ run_single_season_model <- function(gps_data,
     )
 
     for (i in 1:nrow(ite)) {
-      meanlog <- ite[i, paste0("alpha_0_re_mu[", group_idx, "]")]
-      sdlog <- ite[i, paste0("beta_0_re_sigma[", group_idx, "]")]
+      meanlog <- ite[i, paste0("alpha_0_mu[", g, "]")]
+      sdlog <- exp(ite[i, paste0("beta_0_re_sigma[", g, "]")])
 
       p_ite$p_0_20[i] <- plnorm(20, meanlog, sdlog)
       p_ite$p_20_200[i] <- plnorm(200, meanlog, sdlog) - plnorm(20, meanlog, sdlog)
@@ -504,8 +723,8 @@ run_single_season_model <- function(gps_data,
     proportion_data <- rbind(proportion_data, group_data)
 
     # Save individual group results
-    saveRDS(p_ite, file = file.path(prop_dir, paste0("proportions_", 
-                                                      tolower(gsub(" ", "_", group_name)), 
+    saveRDS(p_ite, file = file.path(prop_dir, paste0("proportions_",
+                                                      tolower(gsub(" ", "_", group_name)),
                                                       "_", season_filter, ".rds")))
   }
 
@@ -533,7 +752,7 @@ run_single_season_model <- function(gps_data,
 
   if (create_plots) {
     create_flight_height_plots(
-      samples = samples,
+      samples = samples_filtered,
       gps_data = gps,
       plots_dir = plots_dir,
       season_filter = season_filter,
@@ -541,7 +760,12 @@ run_single_season_model <- function(gps_data,
     )
   }
 
-  list(samples = samples, proportions = proportion_data, gps_filtered = gps)
+  list(
+    samples = samples_filtered,
+    proportions = proportion_data,
+    gps_filtered = gps,
+    convergence = convergence
+  )
 }
 
 
@@ -551,17 +775,18 @@ run_single_season_model <- function(gps_data,
 
 #' Run Flight Height Bayesian Model
 #'
-#' Fits a hierarchical Bayesian model to flight height data and generates
-#' diagnostic plots, proportion estimates, and distribution visualizations.
+#' Fits a Bayesian model with GPS quality covariates and automatic chain
+#' convergence filtering.
 #'
 #' @param gps_data Processed GPS dataframe with ecological_group column
 #' @param output_dir Output directory for model results
 #' @param plots_dir Directory for plots
 #' @param season_filter Season to analyze: "post-breeding", "pre-breeding", or "both"
-#' @param n_iter MCMC iterations (default: 50000)
-#' @param burnin_prop Burnin proportion (default: 0.2)
-#' @param thin Thinning interval (default: 5)
-#' @param chains Number of chains (default: 2)
+#' @param n_iter MCMC iterations (default: 1000000)
+#' @param burnin_prop Burnin proportion (default: 0.9)
+#' @param thin Thinning interval (default: 20)
+#' @param chains Number of chains (default: 10)
+#' @param rhat_threshold Max Rhat for convergence (default: 1.1)
 #' @param logo_path Optional path to logo image for plots
 #' @param create_plots Whether to generate flight height distribution plots (default: TRUE)
 #' @return List with results for each season analyzed
@@ -569,10 +794,11 @@ run_flight_height_model <- function(gps_data,
                                      output_dir,
                                      plots_dir,
                                      season_filter = "both",
-                                     n_iter = 50000,
-                                     burnin_prop = 0.2,
-                                     thin = 5,
-                                     chains = 2,
+                                     n_iter = 1000000,
+                                     burnin_prop = 0.9,
+                                     thin = 20,
+                                     chains = 10,
+                                     rhat_threshold = 1.1,
                                      logo_path = NULL,
                                      create_plots = TRUE) {
 
@@ -608,6 +834,7 @@ run_flight_height_model <- function(gps_data,
       burnin_prop = burnin_prop,
       thin = thin,
       chains = chains,
+      rhat_threshold = rhat_threshold,
       logo_path = logo_path,
       create_plots = create_plots
     )
@@ -631,7 +858,6 @@ run_flight_height_model <- function(gps_data,
 #' Generate Plots from Saved Model Results
 #'
 #' Loads a previously saved model and generates flight height distribution plots.
-#' Useful for re-generating plots without re-running the MCMC.
 #'
 #' @param model_path Path to saved model RDS file
 #' @param gps_data GPS dataframe (same filtering will be applied)
@@ -652,8 +878,15 @@ plot_from_saved_model <- function(model_path,
   message("Loading saved model...")
   samples <- readRDS(model_path)
 
-  # Filter GPS data (same as in model)
+  # Filter GPS data (same as in model) with defensive type conversion
   gps <- gps_data %>%
+    mutate(
+      location_long = as.numeric(location_long),
+      location_lat = as.numeric(location_lat),
+      height_above_msl = as.numeric(height_above_msl),
+      distance_to_shore = as.numeric(distance_to_shore),
+      in_GOL = as.logical(in_GOL)
+    ) %>%
     filter(in_GOL == TRUE, state == "Migration") %>%
     filter(!is.na(height_above_msl), !is.na(ecological_group)) %>%
     filter(season == season_filter) %>%
@@ -661,6 +894,7 @@ plot_from_saved_model <- function(model_path,
     filter(height_above_msl < 5000)
 
   message(sprintf("Filtered data: %s observations", format(nrow(gps), big.mark = ",")))
+  message(sprintf("Model used %d converged chains", samples$n_chains_kept))
 
   # Generate plots
   create_flight_height_plots(

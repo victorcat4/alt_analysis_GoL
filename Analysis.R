@@ -31,7 +31,7 @@ DBSCAN_EPS       <- 0.1  # DBSCAN epsilon (degrees)
 DBSCAN_MINPTS    <- 10   # DBSCAN minimum cluster points
 
 # Parallel processing
-N_WORKERS        <- 3 # Number of workers (NULL = auto-detect: cores - 1)
+N_WORKERS        <- 10 # Number of workers (NULL = auto-detect: cores - 1)
 BATCH_SIZE       <- 10  # Individuals per batch for memory management
 
 # Species to exclude

@@ -4,6 +4,9 @@
 #
 # High-level functions that orchestrate the data processing workflow.
 #
+# STRATEGY: Save processed individuals to temporary files, then merge at the end.
+# This avoids issues with concurrent file writes during parallel processing.
+#
 # =============================================================================
 
 
@@ -144,9 +147,124 @@ display_progress <- function(current, total, kept, start_time, bar_width = 40) {
 }
 
 
+# -----------------------------------------------------------------------------
+# TEMPORARY FILE MANAGEMENT
+# -----------------------------------------------------------------------------
+
+#' Create Temporary Directory for Processing
+#'
+#' @param base_dir Base output directory
+#' @param prefix Prefix for temp directory name
+#' @return Path to created temp directory
+create_temp_dir <- function(base_dir, prefix = "temp_processing") {
+  # Handle empty or NULL base_dir
+  if (is.null(base_dir) || base_dir == "" || base_dir == ".") {
+    base_dir <- "output"
+  }
+  
+  # Ensure base_dir exists
+  if (!dir.exists(base_dir)) {
+    dir.create(base_dir, showWarnings = FALSE, recursive = TRUE)
+  }
+  
+  # Create unique temp directory name
+  temp_dir <- file.path(base_dir, paste0(prefix, "_", format(Sys.time(), "%Y%m%d_%H%M%S")))
+  dir.create(temp_dir, showWarnings = FALSE, recursive = TRUE)
+  temp_dir
+}
+
+
+#' Save Individual to Temporary File
+#'
+#' Saves processed individual data to a unique temp file.
+#'
+#' @param df Processed dataframe
+#' @param temp_dir Temporary directory path
+#' @param individual_id Individual identifier (used for filename)
+#' @return Path to saved temp file, or NULL if df is empty
+save_to_temp <- function(df, temp_dir, individual_id) {
+  if (nrow(df) == 0) return(NULL)
+  
+  # Standardize columns before saving
+  df <- standardize_output_columns(df)
+  
+  # Create safe filename
+  safe_id <- gsub("[^a-zA-Z0-9_-]", "_", as.character(individual_id))
+  temp_file <- file.path(temp_dir, paste0(safe_id, ".csv"))
+  
+  # Write without header (we'll add it when merging)
+  write_csv(df, temp_file, col_names = TRUE, na = "")
+  
+  temp_file
+}
+
+
+#' Merge Temporary Files into Final CSV
+#'
+#' Reads all temp files and combines them into the final output CSV.
+#'
+#' @param temp_dir Directory containing temp files
+#' @param output_csv Final output CSV path
+#' @param cleanup Whether to remove temp directory after merging (default: TRUE)
+#' @return Number of records written
+merge_temp_files <- function(temp_dir, output_csv, cleanup = TRUE) {
+  
+  temp_files <- list.files(temp_dir, pattern = "\\.csv$", full.names = TRUE)
+  
+  if (length(temp_files) == 0) {
+    message("  No temp files to merge.")
+    return(0)
+  }
+  
+  message(sprintf("  Merging %d temp files...", length(temp_files)))
+  
+  # Read and combine all temp files
+  all_data <- lapply(temp_files, function(f) {
+    tryCatch(
+      read_csv(f, col_types = cols(.default = col_character()), progress = FALSE),
+      error = function(e) {
+        warning(sprintf("Failed to read temp file: %s", f))
+        NULL
+      }
+    )
+  })
+  
+  # Remove NULLs and combine
+  all_data <- all_data[!sapply(all_data, is.null)]
+  
+  if (length(all_data) == 0) {
+    message("  No valid data in temp files.")
+    return(0)
+  }
+  
+  combined_df <- bind_rows(all_data)
+  
+  # Ensure consistent column order
+  combined_df <- standardize_output_columns(combined_df)
+  
+  # Append to output CSV (preserving any existing data from non-Movebank sources)
+  append_to_csv(combined_df, output_csv)
+  
+  n_records <- nrow(combined_df)
+  message(sprintf("  Merged %s records to output CSV.", format(n_records, big.mark = ",")))
+  
+  # Cleanup temp directory
+  if (cleanup) {
+    unlink(temp_dir, recursive = TRUE)
+    message("  Cleaned up temp directory.")
+  }
+  
+  n_records
+}
+
+
+# -----------------------------------------------------------------------------
+# MOVEBANK PROCESSING (PARALLEL)
+# -----------------------------------------------------------------------------
+
 #' Process Single Movebank Individual (for parallel processing)
 #'
-#' Reads and processes a single individual file. Returns processed data or NULL.
+#' Reads and processes a single individual file. Saves to temp file.
 #'
 #' @param file_path Path to individual CSV file
 #' @param species Species name (for exclusion check)
@@ -154,36 +272,40 @@ display_progress <- function(current, total, kept, start_time, bar_width = 40) {
 #' @param area_res Restricted study area polygon
 #' @param area_ext Extended study area polygon
 #' @param coastline Coastline polygon
+#' @param temp_dir Temporary directory for saving results
 #' @param ... Additional parameters passed to process_individual
-#' @return List with status and data, or NULL on error
+#' @return List with status and temp_file path (or NULL)
 process_single_movebank <- function(file_path,
                                      species,
                                      excluded_species,
                                      area_res,
                                      area_ext,
                                      coastline,
+                                     temp_dir,
                                      ...) {
   
-
   # Skip excluded species
   if (species %in% excluded_species) {
-    return(list(status = "excluded_species", data = NULL))
+    return(list(status = "excluded_species", temp_file = NULL))
   }
   
   # Read individual file
- df <- tryCatch(
+  df <- tryCatch(
     read_movebank_individual(file_path),
     error = function(e) NULL
   )
   
   if (is.null(df) || nrow(df) == 0) {
-    return(list(status = "read_error", data = NULL))
+    return(list(status = "read_error", temp_file = NULL))
   }
   
   # Skip if no altitude data
   if (!"height_above_msl" %in% names(df) || all(is.na(df$height_above_msl))) {
-    return(list(status = "no_altitude", data = NULL))
+    return(list(status = "no_altitude", temp_file = NULL))
   }
+  
+  # Get individual ID for temp file naming
+  individual_id <- unique(df$individual_id)[1]
   
   # Process individual
   df <- process_individual(
@@ -195,17 +317,19 @@ process_single_movebank <- function(file_path,
   )
   
   if (nrow(df) > 0) {
-    return(list(status = "kept", data = df))
+    # Save to temp file
+    temp_file <- save_to_temp(df, temp_dir, individual_id)
+    return(list(status = "kept", temp_file = temp_file))
   } else {
-    return(list(status = "filtered", data = NULL))
+    return(list(status = "filtered", temp_file = NULL))
   }
 }
 
 
-#' Process All Movebank Individuals (Parallel)
+#' Process All Movebank Individuals (Parallel with Temp Files)
 #'
 #' Iterates through the Movebank directory structure and processes each individual
-#' using parallel processing.
+#' using parallel processing. Saves to temp files, then merges at the end.
 #'
 #' @param base_dir Base directory (species/individual.csv structure)
 #' @param output_csv Output CSV file path
@@ -214,7 +338,7 @@ process_single_movebank <- function(file_path,
 #' @param area_ext Extended study area polygon
 #' @param coastline Coastline polygon
 #' @param n_workers Number of parallel workers (default: availableCores() - 1)
-#' @param batch_size Number of individuals per batch for writing (default: 100)
+#' @param batch_size Number of individuals per batch (default: 100)
 #' @param ... Additional parameters passed to process_individual
 #' @return List with total and kept counts
 process_movebank_individuals <- function(base_dir,
@@ -247,6 +371,10 @@ process_movebank_individuals <- function(base_dir,
   message(sprintf("  Found %d individuals across %d species", n_total, n_species))
   message(sprintf("  Using %d parallel workers\n", n_workers))
   
+  # Create temp directory for this processing run
+  temp_dir <- create_temp_dir(dirname(output_csv), "movebank_temp")
+  message(sprintf("  Temp directory: %s\n", temp_dir))
+  
   # Set up parallel backend
   future::plan(future::multisession, workers = n_workers)
   on.exit(future::plan(future::sequential), add = TRUE)
@@ -267,9 +395,12 @@ process_movebank_individuals <- function(base_dir,
     n_errors = 0
   )
   
+  # Collect all temp file paths
+  all_temp_files <- character(0)
+  
   start_time <- Sys.time()
   
-  # Process in batches to manage memory and provide intermediate writes
+  # Process in batches
   n_batches <- ceiling(n_total / batch_size)
   
   progressr::with_progress({
@@ -281,7 +412,7 @@ process_movebank_individuals <- function(base_dir,
       end_idx <- min(batch_idx * batch_size, n_total)
       batch_info <- file_info[start_idx:end_idx, ]
       
-      # Process batch in parallel
+      # Process batch in parallel - each worker saves to its own temp file
       results <- furrr::future_map(
         seq_len(nrow(batch_info)),
         function(i) {
@@ -292,6 +423,7 @@ process_movebank_individuals <- function(base_dir,
             area_res = area_res,
             area_ext = area_ext,
             coastline = coastline,
+            temp_dir = temp_dir,
             ...
           )
           p()  # Update progress
@@ -301,13 +433,14 @@ process_movebank_individuals <- function(base_dir,
       )
       
       # Collect results and update stats
-      batch_data <- list()
       for (result in results) {
         if (is.null(result)) {
           stats$n_errors <- stats$n_errors + 1
         } else if (result$status == "kept") {
           stats$n_kept <- stats$n_kept + 1
-          batch_data <- c(batch_data, list(result$data))
+          if (!is.null(result$temp_file)) {
+            all_temp_files <- c(all_temp_files, result$temp_file)
+          }
         } else if (result$status == "excluded_species") {
           stats$n_excluded_species <- stats$n_excluded_species + 1
         } else if (result$status == "no_altitude") {
@@ -318,16 +451,14 @@ process_movebank_individuals <- function(base_dir,
           stats$n_errors <- stats$n_errors + 1
         }
       }
-      
-      # Write batch results to CSV
-      if (length(batch_data) > 0) {
-        combined_df <- bind_rows(batch_data)
-        append_to_csv(combined_df, output_csv)
-      }
     }
   })
   
   cat("\n")
+  
+  # Merge all temp files into final CSV
+  message("\n  Finalizing output...")
+  merge_temp_files(temp_dir, output_csv, cleanup = TRUE)
   
   # Print summary
   elapsed <- as.numeric(difftime(Sys.time(), start_time, units = "secs"))
@@ -343,7 +474,14 @@ process_movebank_individuals <- function(base_dir,
 }
 
 
+# -----------------------------------------------------------------------------
+# NON-MOVEBANK PROCESSING (SEQUENTIAL WITH TEMP FILES)
+# -----------------------------------------------------------------------------
+
 #' Process Non-Movebank Data Source
+#'
+#' Processes non-Movebank data sources sequentially, saving to temp files
+#' before merging into the final output.
 #'
 #' @param reader_function Function to read the data source
 #' @param data_dir Directory containing data
@@ -393,6 +531,13 @@ process_non_movebank_source <- function(reader_function,
   
   message(sprintf("  Processing %d individuals...\n", n_total))
   
+  # Create temp directory for this source
+  # Use data_dir basename for identification, sanitized for path safety
+  source_name <- basename(data_dir)
+  source_name <- gsub("[^a-zA-Z0-9_-]", "_", source_name)
+  source_name <- substr(source_name, 1, 30)
+  temp_dir <- create_temp_dir(dirname(output_csv), paste0("nonmb_temp_", source_name))
+  
   n_kept <- 0
   n_excluded_species <- 0
   n_no_altitude <- 0
@@ -430,7 +575,8 @@ process_non_movebank_source <- function(reader_function,
     )
     
     if (nrow(df) > 0) {
-      append_to_csv(df, output_csv)
+      # Save to temp file instead of directly to output
+      save_to_temp(df, temp_dir, indiv)
       n_kept <- n_kept + 1
     } else {
       n_filtered <- n_filtered + 1
@@ -439,6 +585,10 @@ process_non_movebank_source <- function(reader_function,
   
   display_progress(n_total, n_total, n_kept, start_time)
   cat("\n\n")
+  
+  # Merge temp files into final CSV
+  message("  Finalizing output...")
+  merge_temp_files(temp_dir, output_csv, cleanup = TRUE)
   
   elapsed <- as.numeric(difftime(Sys.time(), start_time, units = "secs"))
   

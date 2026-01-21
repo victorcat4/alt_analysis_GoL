@@ -6,6 +6,8 @@
 #
 # Pipeline:
 #   1. Process all data sources (Movebank + non-Movebank)
+#      - Each source saves to temp files, then merges to final CSV
+#      - This avoids parallel processing file access issues
 #   2. Summary statistics
 #   3. Load processed data & add ecological groups
 #   4. Visualization
@@ -32,8 +34,8 @@ DBSCAN_EPS       <- 0.1  # DBSCAN epsilon (degrees)
 DBSCAN_MINPTS    <- 10   # DBSCAN minimum cluster points
 
 # Parallel processing
-N_WORKERS        <- 10 # Number of workers (NULL = auto-detect: cores - 1)
-BATCH_SIZE       <- 10  # Individuals per batch for memory management
+N_WORKERS        <- 10   # Number of workers (NULL = auto-detect: cores - 1)
+BATCH_SIZE       <- 10   # Individuals per batch for memory management
 
 # Species to exclude
 EXCLUDED_SPECIES <- c(
@@ -77,6 +79,12 @@ spatial <- load_spatial_data()
 
 # -----------------------------------------------------------------------------
 # PHASE 1: DATA PROCESSING
+# -----------------------------------------------------------------------------
+#
+# Strategy: Each data source processes individuals and saves to temp files,
+# then merges all temp files into the final gps_migration.csv.
+# This avoids file access conflicts during parallel processing.
+#
 # -----------------------------------------------------------------------------
 
 message("\n", strrep("=", 70))

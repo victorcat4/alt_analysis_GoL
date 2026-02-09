@@ -5,13 +5,12 @@
 # Main analysis script for GPS tracking data processing and visualization.
 #
 # Pipeline:
-#   1. Process all data sources (Movebank + non-Movebank)
-#      - Each source saves to temp files, then merges to final CSV
-#      - This avoids parallel processing file access issues
+#   1. (Optional) Process all data sources (Movebank + non-Movebank)
 #   2. Summary statistics
 #   3. Load processed data & add ecological groups
 #   4. Visualization
-#   5. (Optional) Bayesian modeling
+#   5a. (Optional) Bayesian model fitting
+#   5b. (Optional) Generate plots from model results
 #
 # =============================================================================
 
@@ -48,8 +47,10 @@ EXCLUDED_SPECIES <- c(
   "Ciconia ciconia"
 )
 
-# Run Bayesian modeling? (computationally intensive)
-RUN_MODELING <- FALSE
+# Run flags (set FALSE to skip already-completed steps)
+RUN_PROCESSING   <- FALSE  # Phase 1: data processing (slow, only needed once)
+RUN_MODELING     <- FALSE  # Phase 5a: Bayesian model fitting (computationally intensive)
+RUN_MODEL_PLOTS  <- TRUE   # Phase 5b: generate plots from saved model results
 
 
 # -----------------------------------------------------------------------------
@@ -87,11 +88,14 @@ spatial <- load_spatial_data()
 #
 # -----------------------------------------------------------------------------
 
+output_csv <- file.path(output_dir, "gps_migration.csv")
+
+if (RUN_PROCESSING) {
+
 message("\n", strrep("=", 70))
 message("PHASE 1: Data Processing")
 message(strrep("=", 70), "\n")
 
-output_csv <- file.path(output_dir, "gps_migration.csv")
 if (file.exists(output_csv)) file.remove(output_csv)
 
 # Common processing arguments
@@ -140,7 +144,7 @@ if (dir.exists(td_dir)) {
 
 # 1.3 Honey Buzzard (Patrick Byholm)
 message("\n[3/5] Honey Buzzard (Byholm)...")
-hb_dir <- file.path(non_movebank_dir, "Bondrée_apivore_patrick_byholm")
+hb_dir <- file.path(non_movebank_dir, "BondrÃ©e_apivore_patrick_byholm")
 if (dir.exists(hb_dir)) {
   result <- do.call(process_non_movebank_source,
                     c(list(reader_function = read_honey_buzzard_byholm, data_dir = hb_dir), proc_args))
@@ -180,6 +184,11 @@ if (dir.exists(mh_dir)) {
 message("\n", strrep("-", 50))
 message(sprintf("PHASE 1 COMPLETE: %d/%d individuals retained", stats$kept, stats$total))
 message(strrep("-", 50))
+
+} else {
+  message("\n[NOTE] Data processing skipped (set RUN_PROCESSING = TRUE to enable)")
+  message(sprintf("  Using existing output: %s", output_csv))
+}
 
 
 # -----------------------------------------------------------------------------
@@ -251,9 +260,9 @@ if (file.exists(ec_file)) {
   
   # Translation for French group names (adjust if your file uses different encoding)
   group_translation <- c(
-    "Ardéidé" = "Ardeid",
-    "Grand échassier" = "Large wader",
-    "Laridé" = "Larid",
+    "ArdÃ©idÃ©" = "Ardeid",
+    "Grand Ã©chassier" = "Large wader",
+    "LaridÃ©" = "Larid",
     "Limicole" = "Shorebird",
     "Terrestre" = "Terrestrial"
   )
@@ -322,13 +331,16 @@ message(sprintf("  Plots saved to: %s", plots_dir))
 # PHASE 5: BAYESIAN MODELING (Optional)
 # -----------------------------------------------------------------------------
 
+# -----------------------------------------------------------------------------
+# PHASE 5a: BAYESIAN MODEL FITTING (Optional)
+# -----------------------------------------------------------------------------
+
 if (RUN_MODELING) {
   message("\n", strrep("=", 70))
-  message("PHASE 5: Bayesian Modeling")
+  message("PHASE 5a: Bayesian Model Fitting")
   message(strrep("=", 70), "\n")
   
   source("R/06_bayesian_modeling.R")
-  source("R/07_plot_modeling.R")
   
   # Pre-breeding migration
   results_pre <- run_flight_height_model(
@@ -352,16 +364,52 @@ if (RUN_MODELING) {
     chains = 10
   )
   
-  # Generate plots
-  if (!is.null(results_pre)) {
-    generate_model_plots(results_pre, plots_dir, season = "pre-breeding")
-  }
-  if (!is.null(results_post)) {
-    generate_model_plots(results_post, plots_dir, season = "post-breeding")
+} else {
+  message("\n[NOTE] Model fitting skipped (set RUN_MODELING = TRUE to enable)")
+}
+
+
+# -----------------------------------------------------------------------------
+# PHASE 5b: MODEL PLOTS (from saved or freshly fitted models)
+# -----------------------------------------------------------------------------
+
+if (RUN_MODEL_PLOTS) {
+  message("\n", strrep("=", 70))
+  message("PHASE 5b: Model Plots")
+  message(strrep("=", 70), "\n")
+  
+  source("R/07_plot_modeling.R")
+  
+  if (RUN_MODELING) {
+    # Use freshly fitted results
+    if (!is.null(results_pre)) {
+      generate_model_plots(results_pre, plots_dir, season_filter = "pre-breeding")
+    }
+    if (!is.null(results_post)) {
+      generate_model_plots(results_post, plots_dir, season_filter = "post-breeding")
+    }
+  } else {
+    # Load from saved model files
+    model_pre_path  <- file.path(output_dir, "model", "model_pre-breeding.rds")
+    model_post_path <- file.path(output_dir, "model", "model_post-breeding.rds")
+    
+    if (file.exists(model_pre_path)) {
+      message("  Loading saved pre-breeding model...")
+      plot_from_saved_model(model_pre_path, gps, plots_dir, season_filter = "pre-breeding")
+    } else {
+      message("  Pre-breeding model not found: ", model_pre_path)
+    }
+    
+    if (file.exists(model_post_path)) {
+      message("  Loading saved post-breeding model...")
+      plot_from_saved_model(model_post_path, gps, plots_dir, season_filter = "post-breeding")
+    } else {
+      message("  Post-breeding model not found: ", model_post_path)
+    }
   }
   
 } else {
-  message("\n[NOTE] Bayesian modeling skipped (set RUN_MODELING = TRUE to enable)")
+  message("\n[NOTE] Model plots skipped (set RUN_MODEL_PLOTS = TRUE to enable)")
 }
 
 

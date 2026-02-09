@@ -267,6 +267,115 @@ create_proportion_table <- function(proportion_data, plots_dir, season_filter) {
 
 
 # -----------------------------------------------------------------------------
+# PROPORTION BY DISTANCE TO SHORE
+# -----------------------------------------------------------------------------
+
+#' Plot Predicted Proportion Below 300m by Distance to Shore
+#'
+#' Computes the predicted proportion of flight heights below 300m as a function
+#' of distance to shore from the lognormal model posterior, per ecological group.
+#' Uses alpha_0_mu + alpha_1_mu * dist_z as the meanlog and exp(beta_0_re_sigma)
+#' as sdlog.
+#'
+#' @param samples MCMC samples object (filtered to converged chains)
+#' @param gps_data Filtered GPS data (same as used for model fitting)
+#' @param plots_dir Output directory for plots
+#' @param season_filter Season label
+#' @param n_dist Number of distance points to predict at (default: 500)
+#' @param max_iter Maximum posterior iterations to use (default: 5000, for speed)
+create_prop_by_distance_plot <- function(samples,
+                                          gps_data,
+                                          plots_dir,
+                                          season_filter,
+                                          n_dist = 500,
+                                          max_iter = 5000) {
+
+  message("  Generating proportion by distance to shore plot...")
+
+  # Recover distance scaling parameters (same scale() as in model fitting)
+  dist_mean <- mean(gps_data$distance_to_shore, na.rm = TRUE)
+  dist_sd   <- sd(gps_data$distance_to_shore, na.rm = TRUE)
+
+  # Use observed data range (don't extrapolate beyond what the model saw)
+  dist_range_m <- range(gps_data$distance_to_shore, na.rm = TRUE)
+  message(sprintf("    Data distance range: %.0f - %.0f m", dist_range_m[1], dist_range_m[2]))
+
+  eco_groups <- sort(unique(gps_data$ecological_group))
+  nspecies   <- length(eco_groups)
+
+  # Combine posterior chains
+  ite <- do.call(rbind, lapply(samples$samples, as.data.frame))
+
+  # Subsample for speed
+  n_ite <- nrow(ite)
+  if (n_ite > max_iter) {
+    ite <- ite[sample(n_ite, max_iter), ]
+  }
+
+  # Distance sequence
+  dist_seq_m <- seq(dist_range_m[1], dist_range_m[2], length.out = n_dist)
+  dist_seq_z <- (dist_seq_m - dist_mean) / dist_sd
+
+  # Compute predictions per group
+  results_list <- vector("list", nspecies)
+
+  for (g in seq_along(eco_groups)) {
+    alpha_0 <- ite[[paste0("alpha_0_mu[", g, "]")]]
+    alpha_1 <- ite[[paste0("alpha_1_mu[", g, "]")]]
+    sdlog   <- exp(ite[[paste0("beta_0_re_sigma[", g, "]")]])
+
+    # mu(d) = alpha_0 + alpha_1 * d_z  =>  matrix [n_ite x n_dist]
+    mu_mat <- outer(alpha_0, rep(1, length(dist_seq_z))) +
+              outer(alpha_1, dist_seq_z)
+
+    p_mat <- plnorm(300, meanlog = mu_mat, sdlog = sdlog)
+
+    results_list[[g]] <- tibble(
+      ecological_group = eco_groups[g],
+      dist_m           = dist_seq_m,
+      prop_med         = apply(p_mat, 2, median) * 100,
+      prop_q025        = apply(p_mat, 2, quantile, 0.025) * 100,
+      prop_q975        = apply(p_mat, 2, quantile, 0.975) * 100
+    )
+  }
+
+  data_all <- bind_rows(results_list)
+
+  # Build plot
+  season_label <- tools::toTitleCase(gsub("-", " ", season_filter))
+
+  plot <- ggplot(
+    data = data_all,
+    aes(x = dist_m, fill = ecological_group, color = ecological_group)
+  ) +
+    geom_line(aes(y = prop_med)) +
+    geom_ribbon(aes(y = prop_med, ymin = prop_q025, ymax = prop_q975), alpha = 0.2, color = NA) +
+    labs(
+      y = "Proportion of points below 300 m (%)",
+      x = "Distance to shore (m)",
+      title = paste(season_label, "migration"),
+      fill = "Ecological group",
+      color = "Ecological group"
+    ) +
+    coord_cartesian(ylim = c(0, 100)) +
+    scale_x_continuous(labels = scales::comma) +
+    theme_classic(base_size = 12) +
+    theme(legend.position = "bottom")
+
+  # Save
+  base_name <- paste0("lognormal_", gsub("-", "_", season_filter), "_prop_under_300")
+
+  ggsave(plot = plot, filename = file.path(plots_dir, paste0(base_name, ".png")),
+         width = 10, height = 7, dpi = 300)
+  ggsave(plot = plot, filename = file.path(plots_dir, paste0(base_name, ".pdf")),
+         device = "pdf", width = 10, height = 7)
+
+  message(sprintf("  Distance plot saved: %s.png / .pdf", base_name))
+  invisible(plot)
+}
+
+
+# -----------------------------------------------------------------------------
 # MCMC DIAGNOSTICS PLOTS
 # -----------------------------------------------------------------------------
 
@@ -331,6 +440,14 @@ generate_model_plots <- function(model_results,
   # Proportion table
   create_proportion_table(
     proportion_data = model_results$proportions,
+    plots_dir = plots_dir,
+    season_filter = season_filter
+  )
+  
+  # Proportion by distance to shore
+  create_prop_by_distance_plot(
+    samples = model_results$samples,
+    gps_data = model_results$gps_filtered,
     plots_dir = plots_dir,
     season_filter = season_filter
   )
@@ -431,6 +548,14 @@ plot_from_saved_model <- function(model_path,
       season_filter = season_filter
     )
   }
+  
+  # Proportion by distance to shore
+  create_prop_by_distance_plot(
+    samples = samples,
+    gps_data = gps,
+    plots_dir = plots_dir,
+    season_filter = season_filter
+  )
   
   if (create_trace) {
     create_trace_plots(

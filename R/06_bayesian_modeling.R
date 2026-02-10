@@ -83,46 +83,6 @@ filter_converged_chains <- function(samples, converged_idx) {
 
 
 # -----------------------------------------------------------------------------
-# INITIAL VALUES
-# -----------------------------------------------------------------------------
-
-#' Generate Initial Values via Model Simulation
-generate_initial_values <- function(model, nspecies, chain_idx) {
-  
-  if (chain_idx == 1) {
-    inits <- list(
-      alpha_0_mu = rep(0, nspecies), 
-      alpha_1_mu = rep(0, nspecies),
-      beta_0_sigma = 0, 
-      beta_0_sigma_sigma = 0.1,
-      beta_0_obs = 0, 
-      beta_1_obs = 0, 
-      beta_2_obs = 0
-    )
-  } else {
-    inits <- list(
-      alpha_0_mu = rnorm(nspecies, 0, 0.5), 
-      alpha_1_mu = rnorm(nspecies, 0, 0.5),
-      beta_0_sigma = rnorm(1, 0, 0.5), 
-      beta_0_sigma_sigma = rgamma(1, 1, 1),
-      beta_0_obs = rnorm(1, 0, 0.5), 
-      beta_1_obs = rnorm(1, 0, 0.5), 
-      beta_2_obs = rnorm(1, 0, 0.5)
-    )
-  }
-  
-  model$setInits(inits)
-  model$simulate(c("beta_0_re_sigma", "sigma_obs", "sigma_lognorm", "mu", "true_alt"))
-  
-  inits$beta_0_re_sigma <- model$beta_0_re_sigma
-  inits$sigma_obs <- model$sigma_obs
-  inits$true_alt <- model$true_alt
-  inits$mu <- model$mu
-  inits
-}
-
-
-# -----------------------------------------------------------------------------
 # DATA PREPARATION
 # -----------------------------------------------------------------------------
 
@@ -226,51 +186,81 @@ run_flight_height_model <- function(gps_data,
   # --- MODEL ---
   message("  Building model...")
   
-  code <- nimbleCode({
-    for (i in 1:N) {
-      obs_alt[i] ~ dnorm(mean = true_alt[i], sd = sigma_obs[i])
-      true_alt[i] ~ dlnorm(meanlog = mu[i], sdlog = sigma_lognorm[species_indices[i]])
-      mu[i] <- alpha_0_mu[species_indices[i]] + alpha_1_mu[species_indices[i]] * dist_shore[i]
-      log(sigma_obs[i]) <- beta_0_obs + beta_1_obs * gps_hdop[i] + beta_2_obs * gps_nb_sat[i]
-    }
-    for (j in 1:nspecies) {
-      alpha_0_mu[j] ~ dnorm(mean = 0, sd = 2)
-      alpha_1_mu[j] ~ dnorm(mean = 0, sd = 0.5)
-      beta_0_re_sigma[j] ~ dnorm(mean = beta_0_sigma, sd = beta_0_sigma_sigma)
-      log(sigma_lognorm[j]) <- beta_0_re_sigma[j]
-    }
-    beta_0_sigma ~ dnorm(mean = 0, sd = 0.5)
-    beta_0_sigma_sigma ~ dgamma(shape = 1, rate = 1)
-    beta_0_obs ~ dnorm(mean = 0, sd = 1)
-    beta_1_obs ~ dnorm(mean = 0, sd = 0.5)
-    beta_2_obs ~ dnorm(mean = 0, sd = 0.5)
-  })
+code <- nimbleCode({
+  
+  for (i in 1:N) {
+    
+    obs_alt[i] ~ dnorm(mean = true_alt[i], sd = sigma_obs[i])                                             # observation process
+    true_alt[i] ~ dgamma(shape =  shape_alt[species_indices[i]], rate = rate_alt[i])                      # latent process
+    
+    
+    
+    log(mu_alt[i]) <- alpha_0_mu[species_indices[i]] + alpha_1_mu[species_indices[i]] * dist_shore[i]     # calcul rate_alt
+    rate_alt[i] <- shape_alt[species_indices[i]] / mu_alt[i] 
+    
+  
+    log(sigma_obs[i]) <- beta_0_obs + beta_1_obs * gps_hdop[i] + beta_2_obs * gps_nb_sat[i]               # calcul sigma_obs
+    
+  }
+  
+  
+  
+  for(j in 1:nspecies){
+    
+    alpha_0_mu[j] ~ dnorm(mean = 0, sd = 1)
+    alpha_1_mu[j] ~ dnorm(mean = 0, sd = 1)
+    
+    
+    log_shape_alt[j] ~ dnorm(mean = 0, sd = 1)
+    shape_alt[j] <- exp(log_shape_alt[j])             
+    
+  }
+  
+  
+  beta_0_obs ~ dnorm(mean = 0, sd = 1)
+  beta_1_obs ~ dnorm(mean = 0, sd = 1)
+  beta_2_obs ~ dnorm(mean = 0, sd = 1)
+  
+})
 
   # --- INITS ---
   message(sprintf("  Initializing %d chains...", chains))
   
-  init_base <- list(
-    alpha_0_mu = rep(0, nspecies), 
-    alpha_1_mu = rep(0, nspecies),
-    beta_0_sigma = 0, 
-    beta_0_sigma_sigma = 0.1,
-    beta_0_obs = 0, 
-    beta_1_obs = 0, 
-    beta_2_obs = 0
-  )
+  l0 <- list( 
+    alpha_0_mu = rep(0,5),  
+    alpha_1_mu = rep(0,5),
+    log_shape_alt = rep(0,5),
+    beta_0_obs = 0,
+    beta_1_obs = 0,
+    beta_2_obs = 0)
   
   model <- nimbleModel(code = code, data = data, constants = constants, inits = init_base)
-  inits <- lapply(1:chains, function(i) generate_initial_values(model, nspecies, i))
+
+  inits <- list(l0)
+
+  for(i in 1:(chains-1)){
+    
+    lnew <- list(
+      alpha_0_mu = rnorm(5, mean = 0, sd = 1),
+      alpha_1_mu = rnorm(5, mean = 0, sd = 1),
+      log_shape_alt = rnorm(5, mean = 0, sd = 1),
+      beta_0_obs = rnorm(1, mean = 0, sd = 1),
+      beta_1_obs = rnorm(1, mean = 0, sd = 1),
+      beta_2_obs = rnorm(1, mean = 0, sd = 1))
+    
+    inits <- c(inits, list(lnew))
+  }
 
   # --- MCMC ---
   message(sprintf("  Running MCMC: %d iter, %d chains, thin=%d", n_iter, chains, thin))
 
-  conf <- configureMCMC(
-    model, 
-    enableWAIC = TRUE,
-    monitors = c('alpha_0_mu', 'alpha_1_mu', 'beta_0_sigma', 'beta_0_sigma_sigma',
-                 'beta_0_obs', 'beta_1_obs', 'beta_2_obs', 'beta_0_re_sigma')
-  )
+conf <- configureMCMC(model, enableWAIC = TRUE,
+                      monitors = c('alpha_0_mu',
+                                   'alpha_1_mu',
+                                   'log_shape_alt',
+                                   'beta_0_obs',
+                                   'beta_1_obs',
+                                   'beta_2_obs'))
   
   mMCMC <- buildMCMC(conf)
   
@@ -311,7 +301,7 @@ run_flight_height_model <- function(gps_data,
   print(samples_filtered$WAIC)
   sink()
 
-  # --- PROPORTIONS ---
+# --- PROPORTIONS ---
   message("  Computing proportions...")
   
   ite <- do.call(rbind, lapply(samples_filtered$samples, as.data.frame))
@@ -319,14 +309,20 @@ run_flight_height_model <- function(gps_data,
   proportion_data <- data.frame()
 
   for (g in seq_along(eco_groups)) {
-    meanlog <- ite[, paste0("alpha_0_mu[", g, "]")]
-    sdlog <- exp(ite[, paste0("beta_0_re_sigma[", g, "]")])
-    
+
+    # Gamma parameters at mean distance to shore (dist_shore = 0)
+    # log(mu_alt) = alpha_0_mu  =>  mu_alt = exp(alpha_0_mu)
+    # shape_alt = exp(log_shape_alt)
+    # rate_alt = shape_alt / mu_alt
+    shape_g <- exp(ite[, paste0("log_shape_alt[", g, "]")])
+    mu_g    <- exp(ite[, paste0("alpha_0_mu[", g, "]")])
+    rate_g  <- shape_g / mu_g
+
     p <- data.frame(
-      p_0_20 = plnorm(20, meanlog, sdlog),
-      p_20_200 = plnorm(200, meanlog, sdlog) - plnorm(20, meanlog, sdlog),
-      p_20_300 = plnorm(300, meanlog, sdlog) - plnorm(20, meanlog, sdlog),
-      p_300_inf = 1 - plnorm(300, meanlog, sdlog)
+      p_0_20   = pgamma(20,  shape = shape_g, rate = rate_g),
+      p_20_200 = pgamma(200, shape = shape_g, rate = rate_g) - pgamma(20,  shape = shape_g, rate = rate_g),
+      p_20_300 = pgamma(300, shape = shape_g, rate = rate_g) - pgamma(20,  shape = shape_g, rate = rate_g),
+      p_300_inf = 1 - pgamma(300, shape = shape_g, rate = rate_g)
     )
 
     proportion_data <- rbind(proportion_data, data.frame(

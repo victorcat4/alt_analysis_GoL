@@ -234,7 +234,7 @@ code <- nimbleCode({
     beta_1_obs = 0,
     beta_2_obs = 0)
   
-  model <- nimbleModel(code = code, data = data, constants = constants, inits = init_base)
+  model <- nimbleModel(code = code, data = data, constants = constants, inits = l0)
 
   inits <- list(l0)
 

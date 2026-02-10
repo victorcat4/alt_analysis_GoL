@@ -50,7 +50,7 @@ EXCLUDED_SPECIES <- c(
 # Run flags (set FALSE to skip already-completed steps)
 RUN_PROCESSING   <- FALSE  # Phase 1: data processing (slow, only needed once)
 RUN_MODELING     <- FALSE  # Phase 5a: Bayesian model fitting (computationally intensive)
-RUN_MODEL_PLOTS  <- TRUE   # Phase 5b: generate plots from saved model results
+RUN_MODEL_PLOTS  <- FALSE   # Phase 5b: generate plots from saved model results
 
 
 # -----------------------------------------------------------------------------
@@ -250,7 +250,6 @@ if (n_na_coords > 0) {
 
 # Add ecological groups
 message("  Adding ecological groups...")
-
 ec_file <- "data/supp/EC.xlsx"
 if (file.exists(ec_file)) {
   
@@ -258,25 +257,9 @@ if (file.exists(ec_file)) {
   ec_mapping <- read_excel(ec_file) %>%
     select(species = specie_scientific, ecological_group = ecological_group)
   
-  # Translation for French group names (adjust if your file uses different encoding)
-  group_translation <- c(
-    "ArdÃ©idÃ©" = "Ardeid",
-    "Grand Ã©chassier" = "Large wader",
-    "LaridÃ©" = "Larid",
-    "Limicole" = "Shorebird",
-    "Terrestre" = "Terrestrial"
-  )
-  
-  # Join and translate
+  # Join
   gps <- gps %>%
-    left_join(ec_mapping, by = c("individual_taxon_canonical_name" = "species")) %>%
-    mutate(
-      ecological_group = if_else(
-        ecological_group %in% names(group_translation),
-        group_translation[ecological_group],
-        ecological_group
-      )
-    )
+    left_join(ec_mapping, by = c("individual_taxon_canonical_name" = "species"))
   
   n_with_group <- sum(!is.na(gps$ecological_group))
   n_species_matched <- n_distinct(gps$individual_taxon_canonical_name[!is.na(gps$ecological_group)])

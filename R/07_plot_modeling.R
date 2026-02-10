@@ -507,7 +507,7 @@ plot_from_saved_model <- function(model_path,
     filter(!is.na(height_above_msl), !is.na(ecological_group)) %>%
     filter(season == season_filter) %>%
     filter(height_above_msl > quantile(height_above_msl, 0.02, na.rm = TRUE)) %>%
-    filter(height_above_msl < 5000)
+    filter(height_above_msl < quantile(height_above_msl, 0.98, na.rm = TRUE))
 
   message(sprintf("Filtered data: %s observations", format(nrow(gps), big.mark = ",")))
   message(sprintf("Model used %d converged chains", samples$n_chains_kept))

@@ -141,7 +141,7 @@ prepare_modeling_data <- function(gps_data, season) {
     filter(!is.na(height_above_msl), !is.na(ecological_group)) %>%
     filter(season == !!season) %>%
     filter(height_above_msl > quantile(height_above_msl, 0.02, na.rm = TRUE)) %>%
-    filter(height_above_msl < 5000)
+    filter(height_above_msl < quantile(height_above_msl, 0.98, na.rm = TRUE))
   
   if (nrow(gps) == 0) return(NULL)
   

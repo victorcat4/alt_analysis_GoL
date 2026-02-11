@@ -133,6 +133,145 @@ plot_flight_height_by_ecological_group <- function(gps, state_filter = "Migratio
 }
 
 
+# -----------------------------------------------------------------------------
+# DAY/NIGHT CLASSIFICATION
+# -----------------------------------------------------------------------------
+
+#' Classify GPS Points as Day or Night
+#'
+#' Uses the suncalc package to determine sunrise/sunset at each point's
+#' location and timestamp. Points between sunrise and sunset are "Day",
+#' otherwise "Night".
+#'
+#' @param gps GPS dataframe with timestamp, location_lat, location_long
+#' @return GPS dataframe with added "day_night" column
+classify_day_night <- function(gps) {
+  if (!require("suncalc", quietly = TRUE)) {
+    install.packages("suncalc", dependencies = TRUE)
+    library(suncalc)
+  }
+  
+  gps <- gps %>%
+    mutate(
+      timestamp_posix = as.POSIXct(timestamp, format = "%Y-%m-%d %H:%M:%S", tz = "UTC"),
+      date = as.Date(timestamp_posix)
+    )
+  
+  sun_times <- suncalc::getSunlightTimes(
+    data = data.frame(
+      date = gps$date,
+      lat = as.numeric(gps$location_lat),
+      lon = as.numeric(gps$location_long)
+    ),
+    keep = c("sunrise", "sunset"),
+    tz = "UTC"
+  )
+  
+  gps$day_night <- ifelse(
+    gps$timestamp_posix >= sun_times$sunrise & gps$timestamp_posix <= sun_times$sunset,
+    "Day", "Night"
+  )
+  
+  gps <- gps %>% select(-timestamp_posix, -date)
+  
+  gps
+}
+
+
+#' Plot Proportion of Points at Day vs Night
+#'
+#' Creates a bar chart showing the proportion of GPS points recorded during
+#' day vs night, faceted by ecological group and season.
+#'
+#' @param gps GPS dataframe with in_GOL, state, timestamp, location columns
+#' @param state_filter Behavior state to plot (default: "Migration")
+#' @return ggplot object
+plot_day_night_proportion <- function(gps, state_filter = "Migration") {
+  
+  plot_data <- gps %>%
+    filter(in_GOL == TRUE, state == state_filter)
+  
+  if (nrow(plot_data) == 0) {
+    return(ggplot() + theme_void() + labs(title = "No data available"))
+  }
+  
+  # Classify day/night
+  message("      Computing sunrise/sunset times...")
+  plot_data <- classify_day_night(plot_data)
+  
+  # Compute proportions
+  has_eco <- "ecological_group" %in% names(plot_data) && any(!is.na(plot_data$ecological_group))
+  
+  if (has_eco) {
+    plot_data <- plot_data %>% filter(!is.na(ecological_group))
+    
+    prop_data <- plot_data %>%
+      count(ecological_group, season, day_night) %>%
+      group_by(ecological_group, season) %>%
+      mutate(
+        total = sum(n),
+        proportion = n / total * 100
+      ) %>%
+      ungroup()
+    
+    p <- ggplot(prop_data, aes(x = ecological_group, y = proportion, fill = day_night)) +
+      geom_col(position = "stack", alpha = 0.85) +
+      geom_text(
+        aes(label = sprintf("%.0f%%", proportion)),
+        position = position_stack(vjust = 0.5),
+        size = 3, color = "white", fontface = "bold"
+      ) +
+      facet_wrap(~ season, ncol = 2) +
+      scale_fill_manual(
+        values = c("Day" = "#F4B942", "Night" = "#2C3E50"),
+        name = "Period"
+      ) +
+      labs(
+        x = "Ecological Group",
+        y = "Proportion (%)",
+        title = paste("Day vs Night Migration Points -", state_filter),
+        subtitle = "Gulf of Lion region"
+      ) +
+      theme_classic(base_size = 12) +
+      theme(
+        strip.text = element_text(face = "bold"),
+        axis.text.x = element_text(angle = 30, hjust = 1)
+      )
+    
+  } else {
+    prop_data <- plot_data %>%
+      count(season, day_night) %>%
+      group_by(season) %>%
+      mutate(
+        total = sum(n),
+        proportion = n / total * 100
+      ) %>%
+      ungroup()
+    
+    p <- ggplot(prop_data, aes(x = season, y = proportion, fill = day_night)) +
+      geom_col(position = "stack", alpha = 0.85) +
+      geom_text(
+        aes(label = sprintf("%.0f%%", proportion)),
+        position = position_stack(vjust = 0.5),
+        size = 4, color = "white", fontface = "bold"
+      ) +
+      scale_fill_manual(
+        values = c("Day" = "#F4B942", "Night" = "#2C3E50"),
+        name = "Period"
+      ) +
+      labs(
+        x = "Season",
+        y = "Proportion (%)",
+        title = paste("Day vs Night Migration Points -", state_filter),
+        subtitle = "Gulf of Lion region"
+      ) +
+      theme_classic(base_size = 12)
+  }
+  
+  p
+}
+
+
 #' Create All Visualizations
 #'
 #' @param gps GPS dataframe
@@ -167,6 +306,10 @@ create_all_visualizations <- function(gps, coastline, output_dir) {
     p6 <- plot_flight_height_by_ecological_group(gps)
     ggsave(file.path(output_dir, "06_flight_height_by_ecological_group.pdf"), p6, width = 12, height = 10, dpi = 300)
   }
+  
+  message("    - Day vs Night proportions...")
+  p7 <- plot_day_night_proportion(gps)
+  ggsave(file.path(output_dir, "07_day_night_proportion.pdf"), p7, width = 12, height = 7, dpi = 300)
   
   invisible(NULL)
 }

@@ -367,7 +367,7 @@ create_prop_by_distance_plot <- function(samples,
   base_name <- paste0("gamma_", gsub("-", "_", season_filter), "_prop_under_300")
 
   ggsave(plot = plot, filename = file.path(plots_dir, paste0(base_name, ".pdf")),
-         device = "pdf", width = 10, height = 7)
+         device = "pdf", width = 7, height = 7)
 
   message(sprintf("  Distance plot saved: %s.pdf", base_name))
   invisible(plot)

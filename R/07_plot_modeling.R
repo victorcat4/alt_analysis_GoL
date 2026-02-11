@@ -209,7 +209,7 @@ create_flight_height_plots <- function(samples,
       logo_grob = logo_grob
     )
 
-    filename <- sprintf("flight_height_%s_%s.png",
+    filename <- sprintf("flight_height_%s_%s.pdf",
                         tolower(gsub(" ", "_", group_name)),
                         gsub("-", "_", season_filter))
 
@@ -254,9 +254,9 @@ create_proportion_table <- function(proportion_data, plots_dir, season_filter) {
     )
 
   gtsave(proportion_table, file.path(plots_dir, paste0("proportions_table_", season_filter, ".html")))
-  gtsave(proportion_table, file.path(plots_dir, paste0("proportions_table_", season_filter, ".png")))
+  gtsave(proportion_table, file.path(plots_dir, paste0("proportions_table_", season_filter, ".pdf")))
   
-  message(sprintf("  Proportion table saved: %s", file.path(plots_dir, paste0("proportions_table_", season_filter, ".png"))))
+  message(sprintf("  Proportion table saved: %s", file.path(plots_dir, paste0("proportions_table_", season_filter, ".pdf"))))
   
   invisible(proportion_table)
 }
@@ -365,12 +365,10 @@ create_prop_by_distance_plot <- function(samples,
   # Save
   base_name <- paste0("gamma_", gsub("-", "_", season_filter), "_prop_under_300")
 
-  ggsave(plot = plot, filename = file.path(plots_dir, paste0(base_name, ".png")),
-         width = 10, height = 7, dpi = 300)
   ggsave(plot = plot, filename = file.path(plots_dir, paste0(base_name, ".pdf")),
          device = "pdf", width = 10, height = 7)
 
-  message(sprintf("  Distance plot saved: %s.png / .pdf", base_name))
+  message(sprintf("  Distance plot saved: %s.pdf", base_name))
   invisible(plot)
 }
 

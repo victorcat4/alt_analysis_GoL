@@ -38,7 +38,7 @@ BATCH_SIZE       <- 10   # Individuals per batch for memory management
 
 # MCMC
 n_chains <- 3
-n_it <- 300000
+n_it <- 100000
 p_burnin <- 0.9
 thin <- 20
 
@@ -323,12 +323,6 @@ message(sprintf("  Plots saved to: %s", plots_dir))
 # -----------------------------------------------------------------------------
 # PHASE 5a: BAYESIAN MODEL FITTING (Optional)
 # -----------------------------------------------------------------------------
-
-n_chains <- 3
-n_it <- 300000
-p_burnin <- 0.9
-thin <- 20
-
 
 if (RUN_MODELING) {
   message("\n", strrep("=", 70))

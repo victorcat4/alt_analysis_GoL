@@ -8,6 +8,8 @@ required_packages <- c(
   "readxl",
   "lubridate",
   "dbscan",
+  "scales",
+  "suncalc",
   # Parallel processing
   "future",
   "furrr",

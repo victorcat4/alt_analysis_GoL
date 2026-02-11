@@ -100,7 +100,8 @@ plot_flight_height_distribution_group <- function(shape,
       axis.text.x = element_blank(),
       axis.ticks.x = element_blank(),
       legend.position = c(0.65, 0.4)
-    )
+    ) +
+    guides(fill = guide_legend(reverse = TRUE))
 
   if (!is.null(logo_grob)) {
     if (requireNamespace("cowplot", quietly = TRUE)) {

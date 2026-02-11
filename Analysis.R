@@ -330,10 +330,10 @@ if (RUN_MODELING) {
     gps_data = gps, 
     output_dir = output_dir, 
     season = "pre-breeding",
-    n_iter = 1000000, 
+    n_iter = 300000, 
     burnin_prop = 0.9, 
     thin = 20, 
-    chains = 10
+    chains = 5
   )
   
   # Post-breeding migration
@@ -341,10 +341,10 @@ if (RUN_MODELING) {
     gps_data = gps, 
     output_dir = output_dir, 
     season = "post-breeding",
-    n_iter = 1000000, 
+    n_iter = 300000, 
     burnin_prop = 0.9, 
     thin = 20, 
-    chains = 10
+    chains = 5
   )
   
 } else {

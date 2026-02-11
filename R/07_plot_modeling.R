@@ -2,7 +2,7 @@
 # Plot Bayesian Model Results
 # =============================================================================
 #
-# Visualization functions for flight height model outputs.
+# Visualization functions for Gamma flight height model outputs.
 #
 # =============================================================================
 
@@ -13,25 +13,25 @@
 
 #' Plot Flight Height Distribution for Single Group
 #'
-#' Creates a lognormal density plot showing flight height distribution with
+#' Creates a Gamma density plot showing flight height distribution with
 #' altitude bands color-coded and proportion estimates in legend.
 #'
-#' @param meanlog Lognormal meanlog parameter (median estimate)
-#' @param sdlog Lognormal sdlog parameter (median estimate)
+#' @param shape Gamma shape parameter (median estimate)
+#' @param rate Gamma rate parameter (median estimate)
 #' @param p_recap Dataframe with proportion summaries (median, CI_025, CI_975)
 #' @param group_name Name of ecological group
 #' @param season_label Season label for subtitle
 #' @param logo_grob Optional logo grob to add to plot
 #' @return ggplot object
-plot_flight_height_distribution_group <- function(meanlog,
-                                                   sdlog,
+plot_flight_height_distribution_group <- function(shape,
+                                                   rate,
                                                    p_recap,
                                                    group_name,
                                                    season_label = "Post-breeding migration",
                                                    logo_grob = NULL) {
 
-  x_vals <- seq(0, 1700, length.out = 10000)
-  dens_vals <- dlnorm(x_vals, meanlog = meanlog, sdlog = sdlog)
+  x_vals <- seq(0.01, 1700, length.out = 10000)
+  dens_vals <- dgamma(x_vals, shape = shape, rate = rate)
 
   pg_data <- data.frame(x = x_vals, y = dens_vals) %>%
     mutate(
@@ -158,24 +158,18 @@ create_flight_height_plots <- function(samples,
 
     message(sprintf("    - %s...", group_name))
 
-    # Calculate proportions for all iterations
-    # sigma_lognorm = exp(beta_0_re_sigma)
+    # Calculate proportions for all iterations using Gamma distribution
+    # Gamma parameterization: shape = exp(log_shape_alt), mu = exp(alpha_0_mu), rate = shape / mu
+    shape_g <- exp(ite[, paste0("log_shape_alt[", g, "]")])
+    mu_g    <- exp(ite[, paste0("alpha_0_mu[", g, "]")])
+    rate_g  <- shape_g / mu_g
+
     p_ite <- data.frame(
-      p_0_20 = numeric(nrow(ite)),
-      p_20_200 = numeric(nrow(ite)),
-      p_200_300 = numeric(nrow(ite)),
-      p_300_inf = numeric(nrow(ite))
+      p_0_20    = pgamma(20,  shape = shape_g, rate = rate_g),
+      p_20_200  = pgamma(200, shape = shape_g, rate = rate_g) - pgamma(20,  shape = shape_g, rate = rate_g),
+      p_200_300 = pgamma(300, shape = shape_g, rate = rate_g) - pgamma(200, shape = shape_g, rate = rate_g),
+      p_300_inf = 1 - pgamma(300, shape = shape_g, rate = rate_g)
     )
-
-    for (i in 1:nrow(ite)) {
-      meanlog <- ite[i, paste0("alpha_0_mu[", g, "]")]
-      sdlog <- exp(ite[i, paste0("beta_0_re_sigma[", g, "]")])
-
-      p_ite$p_0_20[i] <- plnorm(20, meanlog, sdlog)
-      p_ite$p_20_200[i] <- plnorm(200, meanlog, sdlog) - plnorm(20, meanlog, sdlog)
-      p_ite$p_200_300[i] <- plnorm(300, meanlog, sdlog) - plnorm(200, meanlog, sdlog)
-      p_ite$p_300_inf[i] <- 1 - plnorm(300, meanlog, sdlog)
-    }
 
     p_recap <- data.frame(
       p_0_20 = c(
@@ -201,12 +195,14 @@ create_flight_height_plots <- function(samples,
     )
     rownames(p_recap) <- c("median", "CI_025", "CI_975")
 
-    meanlog <- sum_v[paste0("alpha_0_mu[", g, "]"), "50%"]
-    sdlog <- exp(sum_v[paste0("beta_0_re_sigma[", g, "]"), "50%"])
+    # Median parameters for the density curve
+    shape_med <- exp(sum_v[paste0("log_shape_alt[", g, "]"), "50%"])
+    mu_med    <- exp(sum_v[paste0("alpha_0_mu[", g, "]"), "50%"])
+    rate_med  <- shape_med / mu_med
 
     plot <- plot_flight_height_distribution_group(
-      meanlog = meanlog,
-      sdlog = sdlog,
+      shape = shape_med,
+      rate = rate_med,
       p_recap = p_recap,
       group_name = group_name,
       season_label = season_label,
@@ -249,7 +245,7 @@ create_proportion_table <- function(proportion_data, plots_dir, season_filter) {
     gt(groupname_col = "ecological_group") %>%
     cols_label(
       altitude_range = "Altitude Range",
-      proportion_median = "Proportion (%)",
+      median_pct = "Proportion (%)",
       CI_95 = "95% CI"
     ) %>%
     tab_header(
@@ -273,9 +269,9 @@ create_proportion_table <- function(proportion_data, plots_dir, season_filter) {
 #' Plot Predicted Proportion Below 300m by Distance to Shore
 #'
 #' Computes the predicted proportion of flight heights below 300m as a function
-#' of distance to shore from the lognormal model posterior, per ecological group.
-#' Uses alpha_0_mu + alpha_1_mu * dist_z as the meanlog and exp(beta_0_re_sigma)
-#' as sdlog.
+#' of distance to shore from the Gamma model posterior, per ecological group.
+#' Uses exp(alpha_0_mu + alpha_1_mu * dist_z) as the mean and exp(log_shape_alt)
+#' as the shape parameter.
 #'
 #' @param samples MCMC samples object (filtered to converged chains)
 #' @param gps_data Filtered GPS data (same as used for model fitting)
@@ -320,15 +316,19 @@ create_prop_by_distance_plot <- function(samples,
   results_list <- vector("list", nspecies)
 
   for (g in seq_along(eco_groups)) {
-    alpha_0 <- ite[[paste0("alpha_0_mu[", g, "]")]]
-    alpha_1 <- ite[[paste0("alpha_1_mu[", g, "]")]]
-    sdlog   <- exp(ite[[paste0("beta_0_re_sigma[", g, "]")]])
+    alpha_0  <- ite[[paste0("alpha_0_mu[", g, "]")]]
+    alpha_1  <- ite[[paste0("alpha_1_mu[", g, "]")]]
+    shape_g  <- exp(ite[[paste0("log_shape_alt[", g, "]")]])
 
-    # mu(d) = alpha_0 + alpha_1 * d_z  =>  matrix [n_ite x n_dist]
-    mu_mat <- outer(alpha_0, rep(1, length(dist_seq_z))) +
-              outer(alpha_1, dist_seq_z)
+    # log(mu(d)) = alpha_0 + alpha_1 * d_z  =>  mu(d) = exp(alpha_0 + alpha_1 * d_z)
+    # rate(d) = shape / mu(d)
+    # Compute matrix [n_ite x n_dist]
+    log_mu_mat <- outer(alpha_0, rep(1, length(dist_seq_z))) +
+                  outer(alpha_1, dist_seq_z)
+    mu_mat   <- exp(log_mu_mat)
+    rate_mat <- shape_g / mu_mat  # shape_g is recycled across columns
 
-    p_mat <- plnorm(300, meanlog = mu_mat, sdlog = sdlog)
+    p_mat <- pgamma(300, shape = shape_g, rate = rate_mat)
 
     results_list[[g]] <- tibble(
       ecological_group = eco_groups[g],
@@ -363,7 +363,7 @@ create_prop_by_distance_plot <- function(samples,
     theme(legend.position = "bottom")
 
   # Save
-  base_name <- paste0("lognormal_", gsub("-", "_", season_filter), "_prop_under_300")
+  base_name <- paste0("gamma_", gsub("-", "_", season_filter), "_prop_under_300")
 
   ggsave(plot = plot, filename = file.path(plots_dir, paste0(base_name, ".png")),
          width = 10, height = 7, dpi = 300)

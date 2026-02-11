@@ -142,30 +142,30 @@ create_all_visualizations <- function(gps, coastline, output_dir) {
   
   message("    - Migration map (both seasons)...")
   p1 <- plot_gol_migration(gps, coastline)
-  ggsave(file.path(output_dir, "01_gol_migration_both_seasons.png"), p1, width = 14, height = 7, dpi = 300)
+  ggsave(file.path(output_dir, "01_gol_migration_both_seasons.pdf"), p1, width = 14, height = 7, dpi = 300)
   
   message("    - Migration vs Staging...")
   p2 <- plot_gol_migration_vs_staging(gps, coastline)
-  ggsave(file.path(output_dir, "02_gol_migration_vs_staging.png"), p2, width = 10, height = 8, dpi = 300)
+  ggsave(file.path(output_dir, "02_gol_migration_vs_staging.pdf"), p2, width = 10, height = 8, dpi = 300)
   
   if ("ecological_group" %in% names(gps) && any(!is.na(gps$ecological_group))) {
     message("    - By ecological group (pre-breeding)...")
     p3 <- plot_gol_by_ecological_group(gps, coastline, "pre-breeding")
-    ggsave(file.path(output_dir, "03_gol_ecological_groups_pre_breeding.png"), p3, width = 14, height = 10, dpi = 300)
+    ggsave(file.path(output_dir, "03_gol_ecological_groups_pre_breeding.pdf"), p3, width = 14, height = 10, dpi = 300)
     
     message("    - By ecological group (post-breeding)...")
     p4 <- plot_gol_by_ecological_group(gps, coastline, "post-breeding")
-    ggsave(file.path(output_dir, "04_gol_ecological_groups_post_breeding.png"), p4, width = 14, height = 10, dpi = 300)
+    ggsave(file.path(output_dir, "04_gol_ecological_groups_post_breeding.pdf"), p4, width = 14, height = 10, dpi = 300)
   }
   
   message("    - Flight height distribution...")
   p5 <- plot_flight_height_distribution(gps)
-  ggsave(file.path(output_dir, "05_flight_height_distribution.png"), p5, width = 10, height = 6, dpi = 300)
+  ggsave(file.path(output_dir, "05_flight_height_distribution.pdf"), p5, width = 10, height = 6, dpi = 300)
   
   if ("ecological_group" %in% names(gps) && any(!is.na(gps$ecological_group))) {
     message("    - Flight height by ecological group...")
     p6 <- plot_flight_height_by_ecological_group(gps)
-    ggsave(file.path(output_dir, "06_flight_height_by_ecological_group.png"), p6, width = 12, height = 10, dpi = 300)
+    ggsave(file.path(output_dir, "06_flight_height_by_ecological_group.pdf"), p6, width = 12, height = 10, dpi = 300)
   }
   
   invisible(NULL)

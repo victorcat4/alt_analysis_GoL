@@ -36,6 +36,12 @@ DBSCAN_MINPTS    <- 10   # DBSCAN minimum cluster points
 N_WORKERS        <- 10   # Number of workers (NULL = auto-detect: cores - 1)
 BATCH_SIZE       <- 10   # Individuals per batch for memory management
 
+# MCMC
+n_chains <- 3
+n_it <- 300000
+p_burnin <- 0.9
+thin <- 20
+
 # Species to exclude
 EXCLUDED_SPECIES <- c(
   "Puffinus yelkouan",
@@ -318,6 +324,12 @@ message(sprintf("  Plots saved to: %s", plots_dir))
 # PHASE 5a: BAYESIAN MODEL FITTING (Optional)
 # -----------------------------------------------------------------------------
 
+n_chains <- 3
+n_it <- 300000
+p_burnin <- 0.9
+thin <- 20
+
+
 if (RUN_MODELING) {
   message("\n", strrep("=", 70))
   message("PHASE 5a: Bayesian Model Fitting")
@@ -330,10 +342,10 @@ if (RUN_MODELING) {
     gps_data = gps, 
     output_dir = output_dir, 
     season = "pre-breeding",
-    n_iter = 300000, 
-    burnin_prop = 0.9, 
-    thin = 20, 
-    chains = 5
+    n_iter = n_it, 
+    burnin_prop = p_burnin, 
+    thin = thin, 
+    chains = n_chains
   )
   
   # Post-breeding migration
@@ -341,10 +353,10 @@ if (RUN_MODELING) {
     gps_data = gps, 
     output_dir = output_dir, 
     season = "post-breeding",
-    n_iter = 300000, 
-    burnin_prop = 0.9, 
-    thin = 20, 
-    chains = 5
+    n_iter = n_it, 
+    burnin_prop = p_burnin, 
+    thin = thin, 
+    chains = n_chains
   )
   
 } else {

@@ -100,10 +100,11 @@ prepare_modeling_data <- function(gps_data, season_filter) {
     filter(in_GOL == TRUE, state == "Migration") %>%
     filter(!is.na(height_above_msl), !is.na(ecological_group)) %>%
     filter(season == season_filter) %>%
-    filter(height_above_msl > quantile(height_above_msl, 0.01, na.rm = TRUE)) %>%
-    filter(height_above_msl < quantile(height_above_msl, 0.99, na.rm = TRUE)) %>%
-    filter(is.na(gps_hdop) | gps_hdop <= 5) %>%
-    filter(is.na(gps_satellite_count) | gps_satellite_count >= 4)
+    filter(gps_hdop < 6 | is.na(gps_hdop)) %>%
+    filter(gps_satellite_count > 3 | is.na(gps_satellite_count)) %>%
+    filter(height_above_msl > quantile(height_above_msl, 0.01)) %>%
+    filter(height_above_msl < quantile(height_above_msl, 0.99)
+
   
   if (nrow(gps) == 0) return(NULL)
   

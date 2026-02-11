@@ -255,13 +255,108 @@ create_proportion_table <- function(proportion_data, plots_dir, season_filter) {
     )
 
   gtsave(proportion_table, file.path(plots_dir, paste0("proportions_table_", season_filter, ".html")))
-  gtsave(proportion_table, file.path(plots_dir, paste0("proportions_table_", season_filter, ".pdf")))
   
   message(sprintf("  Proportion table saved: %s", file.path(plots_dir, paste0("proportions_table_", season_filter, ".pdf"))))
   
   invisible(proportion_table)
 }
 
+#' Create Quantile Summary Table
+#'
+#' Computes estimated Q25, Q50 (median), and Q75 of flight height from the
+#' Gamma posterior, with 95% credible intervals, per ecological group.
+#' Also reports sample size (N) per group.
+#'
+#' @param samples MCMC samples object (filtered to converged chains)
+#' @param gps_data Filtered GPS data (same as used for model fitting)
+#' @param plots_dir Output directory for table
+#' @param season_filter Season label
+create_quantile_summary_table <- function(samples,
+                                           gps_data,
+                                           plots_dir,
+                                           season_filter) {
+
+  if (!require("gt", quietly = TRUE)) {
+    warning("Package 'gt' not available. Skipping quantile table creation.")
+    return(invisible(NULL))
+  }
+
+  message("  Computing quantile summary table...")
+
+  eco_groups <- sort(unique(gps_data$ecological_group))
+  ite <- do.call(rbind, lapply(samples$samples, as.data.frame))
+
+  # Sample sizes per group
+  n_per_group <- gps_data %>%
+    count(ecological_group, name = "N") %>%
+    arrange(ecological_group)
+
+  results <- list()
+
+  for (g in seq_along(eco_groups)) {
+    group_name <- eco_groups[g]
+
+    # Posterior Gamma parameters at mean distance (dist_shore = 0)
+    shape_g <- exp(ite[, paste0("log_shape_alt[", g, "]")])
+    mu_g    <- exp(ite[, paste0("alpha_0_mu[", g, "]")])
+    rate_g  <- shape_g / mu_g
+
+    # Compute quantiles of the Gamma distribution for each posterior draw
+    q25_draws  <- qgamma(0.25, shape = shape_g, rate = rate_g)
+    q50_draws  <- qgamma(0.50, shape = shape_g, rate = rate_g)
+    q75_draws  <- qgamma(0.75, shape = shape_g, rate = rate_g)
+
+    N_g <- n_per_group$N[n_per_group$ecological_group == group_name]
+
+    results[[g]] <- tibble(
+      ecological_group = group_name,
+      N = N_g,
+      Q25_median = round(median(q25_draws), 1),
+      Q25_CI95   = paste0(round(quantile(q25_draws, 0.025), 1), "-",
+                          round(quantile(q25_draws, 0.975), 1)),
+      Q50_median = round(median(q50_draws), 1),
+      Q50_CI95   = paste0(round(quantile(q50_draws, 0.025), 1), "-",
+                          round(quantile(q50_draws, 0.975), 1)),
+      Q75_median = round(median(q75_draws), 1),
+      Q75_CI95   = paste0(round(quantile(q75_draws, 0.025), 1), "-",
+                          round(quantile(q75_draws, 0.975), 1))
+    )
+  }
+
+  quantile_df <- bind_rows(results)
+
+  season_label <- tools::toTitleCase(gsub("-", " ", season_filter))
+
+  quantile_table <- quantile_df %>%
+    gt() %>%
+    cols_label(
+      ecological_group = "Ecological Group",
+      N = "N",
+      Q25_median = "Q25 (m)",
+      Q25_CI95   = "95% CI",
+      Q50_median = "Q50 (m)",
+      Q50_CI95   = "95% CI",
+      Q75_median = "Q75 (m)",
+      Q75_CI95   = "95% CI"
+    ) %>%
+    tab_spanner(label = "25th percentile", columns = c(Q25_median, Q25_CI95)) %>%
+    tab_spanner(label = "Median", columns = c(Q50_median, Q50_CI95)) %>%
+    tab_spanner(label = "75th percentile", columns = c(Q75_median, Q75_CI95)) %>%
+    tab_header(
+      title = "Estimated flight height quantiles (Gamma model)",
+      subtitle = paste(season_label, "migration")
+    ) %>%
+    cols_align(align = "center", columns = -ecological_group)
+
+  out_file <- file.path(plots_dir, paste0("quantile_summary_", season_filter, ".html"))
+  gtsave(quantile_table, out_file)
+
+  # Also save the underlying data as RDS
+  saveRDS(quantile_df, file.path(plots_dir, paste0("quantile_summary_", season_filter, ".rds")))
+
+  message(sprintf("  Quantile summary table saved: %s", out_file))
+  invisible(quantile_table)
+}
 
 # -----------------------------------------------------------------------------
 # PROPORTION BY DISTANCE TO SHORE
@@ -442,7 +537,15 @@ generate_model_plots <- function(model_results,
     plots_dir = plots_dir,
     season_filter = season_filter
   )
-  
+
+  # Quantile summary table (Q25, Q50, Q75 with CI)
+  create_quantile_summary_table(
+    samples = model_results$samples,
+    gps_data = model_results$gps_filtered,
+    plots_dir = plots_dir,
+    season_filter = season_filter
+  )
+
   # Proportion by distance to shore
   create_prop_by_distance_plot(
     samples = model_results$samples,
@@ -513,8 +616,8 @@ plot_from_saved_model <- function(model_path,
 
   # Load proportion data if available
   prop_dir <- dirname(dirname(model_path))
-  prop_file <- file.path(prop_dir, "proportions", paste0("proportion_data_", season_filter, ".rds"))
-  
+  prop_file <- file.path(prop_dir, "proportions", paste0("proportions_", season_filter, ".rds"))  
+
   if (file.exists(prop_file)) {
     proportions <- readRDS(prop_file)
   } else {
@@ -547,7 +650,15 @@ plot_from_saved_model <- function(model_path,
       season_filter = season_filter
     )
   }
-  
+
+  # Quantile summary table (Q25, Q50, Q75 with CI)
+  create_quantile_summary_table(
+    samples = model_results$samples,
+    gps_data = model_results$gps_filtered,
+    plots_dir = plots_dir,
+    season_filter = season_filter
+  )
+
   # Proportion by distance to shore
   create_prop_by_distance_plot(
     samples = samples,

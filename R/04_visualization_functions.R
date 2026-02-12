@@ -285,10 +285,6 @@ create_all_visualizations <- function(gps, coastline, output_dir) {
   p1 <- plot_gol_migration(gps, coastline)
   ggsave(file.path(output_dir, "01_gol_migration_both_seasons.pdf"), p1, width = 14, height = 7, dpi = 300)
   
-  message("    - Migration vs Staging...")
-  p2 <- plot_gol_migration_vs_staging(gps, coastline)
-  ggsave(file.path(output_dir, "02_gol_migration_vs_staging.pdf"), p2, width = 10, height = 8, dpi = 300)
-  
   if ("ecological_group" %in% names(gps) && any(!is.na(gps$ecological_group))) {
     message("    - By group of species (pre-breeding)...")
     p3 <- plot_gol_by_ecological_group(gps, coastline, "pre-breeding")
@@ -313,5 +309,64 @@ create_all_visualizations <- function(gps, coastline, output_dir) {
   p7 <- plot_day_night_proportion(gps)
   ggsave(file.path(output_dir, "07_day_night_proportion.pdf"), p7, width = 12, height = 7, dpi = 300)
   
+  message("    - Species summary table...")
+  create_species_summary_table(gps, output_dir)
+  
+  message("    - Migration vs Staging...")
+  p2 <- plot_gol_migration_vs_staging(gps, coastline)
+  ggsave(file.path(output_dir, "02_gol_migration_vs_staging.pdf"), p2, width = 10, height = 8, dpi = 300)
+
   invisible(NULL)
+}
+
+
+#' Create Species Summary Table
+#'
+#' Generates a summary table with one row per species showing:
+#' study IDs, total records, records in GOL, and records in GOL during migration.
+#'
+#' @param gps GPS dataframe
+#' @param output_dir Directory to save the table
+#' @return gt table object (invisible)
+create_species_summary_table <- function(gps, output_dir) {
+  
+  if (!require("gt", quietly = TRUE)) {
+    warning("Package 'gt' not available. Skipping species summary table.")
+    return(invisible(NULL))
+  }
+  
+  summary_df <- gps %>%
+    group_by(individual_taxon_canonical_name) %>%
+    summarise(
+      study_ids = paste(sort(unique(study_id)), collapse = ", "),
+      total_records = n(),
+      records_in_GOL = sum(in_GOL == TRUE, na.rm = TRUE),
+      records_in_GOL_migration = sum(in_GOL == TRUE & state == "Migration", na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    arrange(desc(total_records))
+  
+  summary_table <- summary_df %>%
+    gt() %>%
+    cols_label(
+      individual_taxon_canonical_name = "Species",
+      study_ids = "Study IDs",
+      total_records = "Total Records",
+      records_in_GOL = "In GOL",
+      records_in_GOL_migration = "In GOL & Migration"
+    ) %>%
+    fmt_number(
+      columns = c(total_records, records_in_GOL, records_in_GOL_migration),
+      use_seps = TRUE,
+      decimals = 0
+    ) %>%
+    tab_header(
+      title = "Summary of GPS records by species"
+    )
+  
+  gtsave(summary_table, file.path(output_dir, "08_species_summary_table.html"))
+  message(sprintf("    Species summary table saved: %s",
+                  file.path(output_dir, "08_species_summary_table.html")))
+  
+  invisible(summary_table)
 }

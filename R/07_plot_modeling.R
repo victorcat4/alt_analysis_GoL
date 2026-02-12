@@ -217,7 +217,7 @@ create_flight_height_plots <- function(samples,
     ggsave(
       filename = file.path(plots_dir, filename),
       plot = plot,
-      width = 8,
+      width = 6,
       height = 6,
       dpi = 300
     )

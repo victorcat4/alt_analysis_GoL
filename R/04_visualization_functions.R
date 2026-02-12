@@ -340,8 +340,14 @@ create_species_summary_table <- function(gps, output_dir) {
     summarise(
       study_ids = paste(sort(unique(study_id)), collapse = ", "),
       total_records = n(),
+      records_pre_breeding = sum(season == "pre-breeding", na.rm = TRUE),
+      records_post_breeding = sum(season == "post-breeding", na.rm = TRUE),
       records_in_GOL = sum(in_GOL == TRUE, na.rm = TRUE),
+      records_in_GOL_pre = sum(in_GOL == TRUE & season == "pre-breeding", na.rm = TRUE),
+      records_in_GOL_post = sum(in_GOL == TRUE & season == "post-breeding", na.rm = TRUE),
       records_in_GOL_migration = sum(in_GOL == TRUE & state == "Migration", na.rm = TRUE),
+      records_in_GOL_migration_pre = sum(in_GOL == TRUE & state == "Migration" & season == "pre-breeding", na.rm = TRUE),
+      records_in_GOL_migration_post = sum(in_GOL == TRUE & state == "Migration" & season == "post-breeding", na.rm = TRUE),
       .groups = "drop"
     ) %>%
     arrange(desc(total_records))
@@ -351,12 +357,23 @@ create_species_summary_table <- function(gps, output_dir) {
     cols_label(
       individual_taxon_canonical_name = "Species",
       study_ids = "Study IDs",
-      total_records = "Total Records",
-      records_in_GOL = "In GOL",
-      records_in_GOL_migration = "In GOL & Migration"
+      total_records = "Total",
+      records_pre_breeding = "Pre-breeding",
+      records_post_breeding = "Post-breeding",
+      records_in_GOL = "Total",
+      records_in_GOL_pre = "Pre-breeding",
+      records_in_GOL_post = "Post-breeding",
+      records_in_GOL_migration = "Total",
+      records_in_GOL_migration_pre = "Pre-breeding",
+      records_in_GOL_migration_post = "Post-breeding"
     ) %>%
+    tab_spanner(label = "Records", columns = c(total_records, records_pre_breeding, records_post_breeding)) %>%
+    tab_spanner(label = "In GOL", columns = c(records_in_GOL, records_in_GOL_pre, records_in_GOL_post)) %>%
+    tab_spanner(label = "In GOL & Migration", columns = c(records_in_GOL_migration, records_in_GOL_migration_pre, records_in_GOL_migration_post)) %>%
     fmt_number(
-      columns = c(total_records, records_in_GOL, records_in_GOL_migration),
+      columns = c(total_records, records_pre_breeding, records_post_breeding,
+                  records_in_GOL, records_in_GOL_pre, records_in_GOL_post,
+                  records_in_GOL_migration, records_in_GOL_migration_pre, records_in_GOL_migration_post),
       use_seps = TRUE,
       decimals = 0
     ) %>%

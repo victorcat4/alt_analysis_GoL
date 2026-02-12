@@ -37,8 +37,8 @@ N_WORKERS        <- 10   # Number of workers (NULL = auto-detect: cores - 1)
 BATCH_SIZE       <- 10   # Individuals per batch for memory management
 
 # MCMC
-n_chains <- 5
-n_it <- 500000
+n_chains <- 4
+n_it <- 1000000
 p_burnin <- 0.9
 thin <- 20
 
@@ -55,8 +55,8 @@ EXCLUDED_SPECIES <- c(
 
 # Run flags (set FALSE to skip already-completed steps)
 RUN_PROCESSING   <- FALSE  # Phase 1: data processing (slow, only needed once)
-RUN_MODELING     <- FALSE  # Phase 5a: Bayesian model fitting (computationally intensive)
-RUN_MODEL_PLOTS  <- FALSE   # Phase 5b: generate plots from saved model results
+RUN_MODELING     <- TRUE  # Phase 5a: Bayesian model fitting (computationally intensive)
+RUN_MODEL_PLOTS  <- TRUE   # Phase 5b: generate plots from saved model results
 
 
 # -----------------------------------------------------------------------------

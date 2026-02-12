@@ -330,7 +330,7 @@ create_quantile_summary_table <- function(samples,
   quantile_table <- quantile_df %>%
     gt() %>%
     cols_label(
-      ecological_group = "Group of Species",
+      ecological_group = "Ecological Group",
       N = "N",
       Q25_median = "Q25 (m)",
       Q25_CI95   = "95% CI",
@@ -437,26 +437,34 @@ create_prop_by_distance_plot <- function(samples,
 
   data_all <- bind_rows(results_list)
 
+  # Convert distance to km
+  data_all <- data_all %>%
+    mutate(dist_km = dist_m / 1000)
+
   # Build plot
   season_label <- tools::toTitleCase(gsub("-", " ", season_filter))
 
   plot <- ggplot(
     data = data_all,
-    aes(x = dist_m, fill = ecological_group, color = ecological_group)
+    aes(x = dist_km, fill = ecological_group, color = ecological_group)
   ) +
     geom_line(aes(y = prop_med)) +
     geom_ribbon(aes(y = prop_med, ymin = prop_q025, ymax = prop_q975), alpha = 0.2, color = NA) +
     labs(
       y = "Proportion of points below 300 m (%)",
-      x = "Distance to shore (m)",
+      x = "Distance to shore (km)",
       title = paste(season_label, "migration"),
-      fill = "Group of species",
-      color = "Group of species"
+      fill = "Ecological group",
+      color = "Ecological group"
     ) +
     coord_cartesian(ylim = c(0, 100)) +
-    scale_x_continuous(labels = scales::comma) +
+    scale_x_continuous(breaks = seq(0, 80, by = 20), limits = c(0, 80)) +
     theme_classic(base_size = 12) +
-    theme(legend.position = "bottom")
+    theme(
+      legend.position = "bottom",
+      panel.grid.major = element_line(color = "grey90", linewidth = 0.3),
+      panel.grid.minor = element_line(color = "grey95", linewidth = 0.15)
+    )
 
   # Save
   base_name <- paste0("gamma_", gsub("-", "_", season_filter), "_prop_under_300")

@@ -99,7 +99,7 @@ plot_flight_height_distribution_group <- function(shape,
     theme(
       axis.text.x = element_blank(),
       axis.ticks.x = element_blank(),
-      legend.position = c(0.65, 0.4)
+      legend.position = c(0.65, 0.5)
     ) +
     guides(fill = guide_legend(reverse = TRUE))
 

@@ -82,7 +82,8 @@ plot_flight_height_distribution_group <- function(shape,
     geom_vline(xintercept = 20, linetype = "longdash", col = "grey") +
     geom_vline(xintercept = 200, linetype = "longdash", col = "grey") +
     geom_vline(xintercept = 300, linetype = "longdash") +
-    coord_flip(xlim = c(0, 1600), ylim = c(0, max(dens_vals) * 1.05)) +
+    coord_flip(xlim = c(0, 1000),
+               ylim=c(0,0.01)) +
     scale_fill_manual(
       name = "Proportion of points (95% CI)",
       values = fill_colors,

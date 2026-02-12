@@ -137,11 +137,11 @@ plot_flight_height_by_ecological_group <- function(gps, state_filter = "Migratio
 # DAY/NIGHT CLASSIFICATION
 # -----------------------------------------------------------------------------
 
-#' Classify GPS Points as Day or Night
+#' Classify GPS Points as Day or Night (French Time)
 #'
-#' Uses the suncalc package to determine sunrise/sunset at each point's
-#' location and timestamp. Points between sunrise and sunset are "Day",
-#' otherwise "Night".
+#' Converts timestamps to French time (Europe/Paris) and uses the suncalc
+#' package to determine sunrise/sunset at each point's location.
+#' Points between sunrise and sunset are "Day", otherwise "Night".
 #'
 #' @param gps GPS dataframe with timestamp, location_lat, location_long
 #' @return GPS dataframe with added "day_night" column
@@ -151,10 +151,12 @@ classify_day_night <- function(gps) {
     library(suncalc)
   }
   
+  # Convert UTC timestamps to French time (Europe/Paris)
   gps <- gps %>%
     mutate(
       timestamp_posix = as.POSIXct(timestamp, format = "%Y-%m-%d %H:%M:%S", tz = "UTC"),
-      date = as.Date(timestamp_posix)
+      timestamp_fr = with_tz(timestamp_posix, tzone = "Europe/Paris"),
+      date = as.Date(timestamp_fr)
     )
   
   sun_times <- suncalc::getSunlightTimes(
@@ -164,15 +166,15 @@ classify_day_night <- function(gps) {
       lon = as.numeric(gps$location_long)
     ),
     keep = c("sunrise", "sunset"),
-    tz = "UTC"
+    tz = "Europe/Paris"
   )
   
   gps$day_night <- ifelse(
-    gps$timestamp_posix >= sun_times$sunrise & gps$timestamp_posix <= sun_times$sunset,
+    gps$timestamp_fr >= sun_times$sunrise & gps$timestamp_fr <= sun_times$sunset,
     "Day", "Night"
   )
   
-  gps <- gps %>% select(-timestamp_posix, -date)
+  gps <- gps %>% select(-timestamp_posix, -timestamp_fr, -date)
   
   gps
 }
@@ -227,7 +229,7 @@ plot_day_night_proportion <- function(gps, state_filter = "Migration") {
         name = "Period"
       ) +
       labs(
-        x = "Group of species",
+        x = "Ecological Group",
         y = "Proportion (%)",
         title = paste("Day vs Night Migration Points -", state_filter),
         subtitle = "Gulf of Lion region"

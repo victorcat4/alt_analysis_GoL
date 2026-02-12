@@ -55,8 +55,8 @@ EXCLUDED_SPECIES <- c(
 
 # Run flags (set FALSE to skip already-completed steps)
 RUN_PROCESSING   <- FALSE  # Phase 1: data processing (slow, only needed once)
-RUN_MODELING     <- TRUE  # Phase 5a: Bayesian model fitting (computationally intensive)
-RUN_MODEL_PLOTS  <- TRUE   # Phase 5b: generate plots from saved model results
+RUN_MODELING     <- FALSE  # Phase 5a: Bayesian model fitting (computationally intensive)
+RUN_MODEL_PLOTS  <- FALSE   # Phase 5b: generate plots from saved model results
 
 
 # -----------------------------------------------------------------------------

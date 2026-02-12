@@ -339,6 +339,7 @@ create_species_summary_table <- function(gps, output_dir) {
     group_by(individual_taxon_canonical_name) %>%
     summarise(
       study_ids = paste(sort(unique(study_id)), collapse = ", "),
+      n_individuals = n_distinct(individual_id),
       total_records = n(),
       records_pre_breeding = sum(season == "pre-breeding", na.rm = TRUE),
       records_post_breeding = sum(season == "post-breeding", na.rm = TRUE),
@@ -357,6 +358,7 @@ create_species_summary_table <- function(gps, output_dir) {
     cols_label(
       individual_taxon_canonical_name = "Species",
       study_ids = "Study IDs",
+      n_individuals = "Individuals",
       total_records = "Total",
       records_pre_breeding = "Pre-breeding",
       records_post_breeding = "Post-breeding",
@@ -371,7 +373,7 @@ create_species_summary_table <- function(gps, output_dir) {
     tab_spanner(label = "In GOL", columns = c(records_in_GOL, records_in_GOL_pre, records_in_GOL_post)) %>%
     tab_spanner(label = "In GOL & Migration", columns = c(records_in_GOL_migration, records_in_GOL_migration_pre, records_in_GOL_migration_post)) %>%
     fmt_number(
-      columns = c(total_records, records_pre_breeding, records_post_breeding,
+      columns = c(n_individuals, total_records, records_pre_breeding, records_post_breeding,
                   records_in_GOL, records_in_GOL_pre, records_in_GOL_post,
                   records_in_GOL_migration, records_in_GOL_migration_pre, records_in_GOL_migration_post),
       use_seps = TRUE,

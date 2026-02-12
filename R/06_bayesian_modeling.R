@@ -103,7 +103,7 @@ prepare_modeling_data <- function(gps_data, season_filter) {
     filter(gps_hdop < 6 | is.na(gps_hdop)) %>%
     filter(gps_satellite_count > 3 | is.na(gps_satellite_count)) %>%
     filter(height_above_msl > quantile(height_above_msl, 0.01)) %>%
-    filter(height_above_msl < quantile(height_above_msl, 0.99)
+    filter(height_above_msl < quantile(height_above_msl, 0.99))
 
   
   if (nrow(gps) == 0) return(NULL)

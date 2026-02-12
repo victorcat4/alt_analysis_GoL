@@ -37,8 +37,8 @@ N_WORKERS        <- 10   # Number of workers (NULL = auto-detect: cores - 1)
 BATCH_SIZE       <- 10   # Individuals per batch for memory management
 
 # MCMC
-n_chains <- 3
-n_it <- 100000
+n_chains <- 5
+n_it <- 500000
 p_burnin <- 0.9
 thin <- 20
 

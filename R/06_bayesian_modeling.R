@@ -196,29 +196,22 @@ code <- nimbleCode({
     obs_alt[i] ~ dnorm(mean = true_alt[i], sd = sigma_obs[i])                                             # observation process
     true_alt[i] ~ dgamma(shape =  shape_alt[species_indices[i]], rate = rate_alt[i])                      # latent process
     
-    
-    
     log(mu_alt[i]) <- alpha_0_mu[species_indices[i]] + alpha_1_mu[species_indices[i]] * dist_shore[i]     # calcul rate_alt
     rate_alt[i] <- shape_alt[species_indices[i]] / mu_alt[i] 
     
-  
     log(sigma_obs[i]) <- beta_0_obs + beta_1_obs * gps_hdop[i] + beta_2_obs * gps_nb_sat[i]               # calcul sigma_obs
     
   }
-  
-  
   
   for(j in 1:nspecies){
     
     alpha_0_mu[j] ~ dnorm(mean = 0, sd = 1)
     alpha_1_mu[j] ~ dnorm(mean = 0, sd = 1)
     
-    
     log_shape_alt[j] ~ dnorm(mean = 0, sd = 1)
     shape_alt[j] <- exp(log_shape_alt[j])             
     
   }
-  
   
   beta_0_obs ~ dnorm(mean = 0, sd = 1)
   beta_1_obs ~ dnorm(mean = 0, sd = 1)

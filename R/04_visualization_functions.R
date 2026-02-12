@@ -81,7 +81,7 @@ plot_gol_by_ecological_group <- function(gps, eu, season_filter = "pre-breeding"
     coord_sf(xlim = c(2, 7), ylim = c(41, 44), expand = FALSE) +
     facet_wrap(~ ecological_group, ncol = 3) +
     labs(x = "Longitude", y = "Latitude",
-         title = paste("Gulf of Lion by Ecological Group -", season_filter)) +
+         title = paste("Gulf of Lion by Group of Species -", season_filter)) +
     theme_classic(base_size = 12) +
     theme(legend.position = "none", strip.text = element_text(face = "bold"))
 }
@@ -127,7 +127,7 @@ plot_flight_height_by_ecological_group <- function(gps, state_filter = "Migratio
     geom_histogram(bins = 30, fill = "steelblue", color = "black", alpha = 0.7) +
     facet_wrap(~ ecological_group, ncol = 2, scales = "free_y") +
     labs(x = "Flight Height (m above MSL)", y = "Count",
-         title = paste("Flight Height by Ecological Group -", state_filter)) +
+         title = paste("Flight Height by Group of Species -", state_filter)) +
     theme_classic(base_size = 12) +
     theme(strip.text = element_text(face = "bold"))
 }
@@ -227,7 +227,7 @@ plot_day_night_proportion <- function(gps, state_filter = "Migration") {
         name = "Period"
       ) +
       labs(
-        x = "Ecological Group",
+        x = "Group of species",
         y = "Proportion (%)",
         title = paste("Day vs Night Migration Points -", state_filter),
         subtitle = "Gulf of Lion region"
@@ -288,11 +288,11 @@ create_all_visualizations <- function(gps, coastline, output_dir) {
   ggsave(file.path(output_dir, "02_gol_migration_vs_staging.pdf"), p2, width = 10, height = 8, dpi = 300)
   
   if ("ecological_group" %in% names(gps) && any(!is.na(gps$ecological_group))) {
-    message("    - By ecological group (pre-breeding)...")
+    message("    - By group of species (pre-breeding)...")
     p3 <- plot_gol_by_ecological_group(gps, coastline, "pre-breeding")
     ggsave(file.path(output_dir, "03_gol_ecological_groups_pre_breeding.pdf"), p3, width = 14, height = 10, dpi = 300)
     
-    message("    - By ecological group (post-breeding)...")
+    message("    - By group of species (post-breeding)...")
     p4 <- plot_gol_by_ecological_group(gps, coastline, "post-breeding")
     ggsave(file.path(output_dir, "04_gol_ecological_groups_post_breeding.pdf"), p4, width = 14, height = 10, dpi = 300)
   }
@@ -302,7 +302,7 @@ create_all_visualizations <- function(gps, coastline, output_dir) {
   ggsave(file.path(output_dir, "05_flight_height_distribution.pdf"), p5, width = 10, height = 6, dpi = 300)
   
   if ("ecological_group" %in% names(gps) && any(!is.na(gps$ecological_group))) {
-    message("    - Flight height by ecological group...")
+    message("    - Flight height by group of species...")
     p6 <- plot_flight_height_by_ecological_group(gps)
     ggsave(file.path(output_dir, "06_flight_height_by_ecological_group.pdf"), p6, width = 12, height = 10, dpi = 300)
   }

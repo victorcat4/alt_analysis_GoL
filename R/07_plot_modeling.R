@@ -330,7 +330,7 @@ create_quantile_summary_table <- function(samples,
   quantile_table <- quantile_df %>%
     gt() %>%
     cols_label(
-      ecological_group = "Ecological Group",
+      ecological_group = "Group of Species",
       N = "N",
       Q25_median = "Q25 (m)",
       Q25_CI95   = "95% CI",
@@ -450,8 +450,8 @@ create_prop_by_distance_plot <- function(samples,
       y = "Proportion of points below 300 m (%)",
       x = "Distance to shore (m)",
       title = paste(season_label, "migration"),
-      fill = "Ecological group",
-      color = "Ecological group"
+      fill = "Group of species",
+      color = "Group of species"
     ) +
     coord_cartesian(ylim = c(0, 100)) +
     scale_x_continuous(labels = scales::comma) +

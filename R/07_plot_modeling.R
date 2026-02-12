@@ -35,12 +35,12 @@ plot_flight_height_distribution_group <- function(shape,
 
   pg_data <- data.frame(x = x_vals, y = dens_vals) %>%
     mutate(
-      fill_group = case_when(
+      fill_group = factor(case_when(
         x > 300 ~ "300_inf",
         x <= 20 ~ "0_20",
         x > 20 & x <= 200 ~ "20_200",
         x > 200 & x <= 300 ~ "200_300"
-      )
+      ))
     )
 
   label_0_20 <- sprintf("between 0-20 m = %.1f%% (%.1f-%.1f%%)",
@@ -78,12 +78,11 @@ plot_flight_height_distribution_group <- function(shape,
   )
 
   plot_base <- ggplot(pg_data, aes(x = x, y = y, fill = fill_group)) +
-    geom_area(alpha = 0.6) +
-    geom_line(color = "black") +
+    geom_area(color = "black") +
     geom_vline(xintercept = 20, linetype = "longdash", col = "grey") +
     geom_vline(xintercept = 200, linetype = "longdash", col = "grey") +
     geom_vline(xintercept = 300, linetype = "longdash") +
-    coord_flip(xlim = c(0, 1600)) +
+    coord_flip(xlim = c(0, 1600), ylim = c(0, max(dens_vals) * 1.05)) +
     scale_fill_manual(
       name = "Proportion of points (95% CI)",
       values = fill_colors,

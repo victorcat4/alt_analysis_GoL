@@ -55,8 +55,8 @@ EXCLUDED_SPECIES <- c(
 
 # Run flags (set FALSE to skip already-completed steps)
 RUN_PROCESSING   <- FALSE  # Phase 1: data processing (slow, only needed once)
-RUN_MODELING     <- FALSE  # Phase 5a: Bayesian model fitting (computationally intensive)
-RUN_MODEL_PLOTS  <- FALSE   # Phase 5b: generate plots from saved model results
+RUN_MODELING     <- TRUE  # Phase 5a: Bayesian model fitting (computationally intensive)
+RUN_MODEL_PLOTS  <- TRUE   # Phase 5b: generate plots from saved model results
 
 
 # -----------------------------------------------------------------------------
@@ -150,7 +150,7 @@ if (dir.exists(td_dir)) {
 
 # 1.3 Honey Buzzard (Patrick Byholm)
 message("\n[3/5] Honey Buzzard (Byholm)...")
-hb_dir <- file.path(non_movebank_dir, "BondrÃ©e_apivore_patrick_byholm")
+hb_dir <- file.path(non_movebank_dir, "BondrÃƒÂ©e_apivore_patrick_byholm")
 if (dir.exists(hb_dir)) {
   result <- do.call(process_non_movebank_source,
                     c(list(reader_function = read_honey_buzzard_byholm, data_dir = hb_dir), proc_args))
@@ -252,6 +252,16 @@ n_na_coords <- sum(is.na(gps$location_long) | is.na(gps$location_lat))
 if (n_na_coords > 0) {
   warning(sprintf("Found %d rows with NA coordinates - filtering out (investigate pipeline bug!)", n_na_coords))
   gps <- gps %>% filter(!is.na(location_long), !is.na(location_lat))
+}
+
+# Remove duplicated records (same location + timestamp, keep first occurrence)
+n_before_dedup <- nrow(gps)
+gps <- gps %>%
+  distinct(location_long, location_lat, timestamp, .keep_all = TRUE)
+n_dupes <- n_before_dedup - nrow(gps)
+if (n_dupes > 0) {
+  message(sprintf("  Removed %s duplicate records (same location & timestamp)",
+                  format(n_dupes, big.mark = ",")))
 }
 
 # Add ecological groups

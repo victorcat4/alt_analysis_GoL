@@ -1,8 +1,8 @@
 # Gulf of Lion Bird Migration Analysis
 
-Processing and analysis of GPS tracking data from multiple bird migration studies over the Gulf of Lion (Mediterranean Sea).
+Estimating fligth heights of migratory birds over the Gulf of Lion (Mediterranean Sea) from GPS tracking data. 
 
-**Author:** Victor Cat
+**Author:** Coline Canonne, Victor Cat, Maud Quéroué, Antoine Courbin, Sebastien Roques, Aurélien Besnard
 
 ---
 

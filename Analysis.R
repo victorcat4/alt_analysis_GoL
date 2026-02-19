@@ -38,9 +38,9 @@ BATCH_SIZE       <- 10   # Individuals per batch for memory management
 
 # MCMC
 n_chains <- 4
-n_it <- 1000000
+n_it <- 3000000
 p_burnin <- 0.9
-thin <- 20
+thin <- 30
 
 # Species to exclude
 EXCLUDED_SPECIES <- c(
